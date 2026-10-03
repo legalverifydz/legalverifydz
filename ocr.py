@@ -52,8 +52,7 @@ everything else keeps working.
 # path is only actually used if it exists on the machine running the
 # code (see the os.path.exists check below), so the same ocr.py works
 # unmodified on your local Windows machine AND on a Linux host.
-# TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-TESSERACT_CMD = None
+# TESSERACT_CMD = r"C:\Users\hp\Desktop\disk oussama\bureau\platform contract\tesseract.exe"
 
 DEFAULT_LANGUAGES = "ara+fra+eng"  # OCR all three at once; contracts
                                    # in Algeria are frequently bilingual.
