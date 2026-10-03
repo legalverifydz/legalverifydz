@@ -47,8 +47,13 @@ everything else keeps working.
 """
 
 # If Tesseract is installed but not on your system PATH (common on
-# Windows), uncomment and edit this line instead of editing PATH:
-TESSERACT_CMD = r"C:\Users\hp\Desktop\disk oussama\bureau\platform contract\tesseract.exe"
+# Windows), uncomment and edit this line instead of editing PATH.
+# Safe to leave set even when deploying to Streamlit Cloud/Linux: this
+# path is only actually used if it exists on the machine running the
+# code (see the os.path.exists check below), so the same ocr.py works
+# unmodified on your local Windows machine AND on a Linux host.
+# TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+TESSERACT_CMD = None
 
 DEFAULT_LANGUAGES = "ara+fra+eng"  # OCR all three at once; contracts
                                    # in Algeria are frequently bilingual.
@@ -98,7 +103,14 @@ def ocr_pdf(file_obj, languages=DEFAULT_LANGUAGES, dpi=DEFAULT_DPI, max_pages=MA
             "Tesseract OCR program)."
         )
 
-    if TESSERACT_CMD:
+    # Only use the hardcoded path if it actually exists on THIS machine.
+    # This is what makes the same ocr.py work both locally on Windows
+    # (where TESSERACT_CMD may be set to a Windows path) and on a Linux
+    # host such as Streamlit Cloud (where that Windows path does not
+    # exist, so pytesseract instead finds the apt-installed `tesseract`
+    # automatically via the system PATH -- see packages.txt).
+    import os
+    if TESSERACT_CMD and os.path.exists(TESSERACT_CMD):
         pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
     try:
