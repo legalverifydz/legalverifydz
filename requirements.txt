@@ -1,3 +1,6 @@
 streamlit
 pdfplumber
 python-docx
+bcrypt
+pytesseract
+Pillow
