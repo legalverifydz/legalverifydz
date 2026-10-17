@@ -4,19 +4,32 @@ import docx
 import re
 import hashlib
 import base64
+import io as _io
+import html as _html
 import extractors
 import rules
 import scoring
 import ocr
 from datetime import datetime
 from pathlib import Path
-# openpyxl is no longer needed for the user database (moved to SQLite),
-# kept only if you still export findings to Excel elsewhere.
+# openpyxl is used only for the admin "export accounts to Excel"
+# feature below (see export_users_excel()) -- the live user database
+# itself is SQLite, not this file.
+from openpyxl import Workbook
 
 # ==========================================
 # CONFIG
 # ==========================================
 st.set_page_config(page_title="LegalVerifyDZ", layout="wide")
+
+# Platform owner/operator accounts: these signup emails (lowercase)
+# get an extra "Accounts" page listing every registered user, with an
+# Excel export -- this is what replaces the old users.xlsx file you
+# used to track signups by eye. Add your own account's email here.
+# Anyone NOT in this set never sees this page or anyone else's data.
+ADMIN_EMAILS = {
+    "your-email@example.com",
+}
 
 # NOTE: the user database moved from an Excel file (users.xlsx) to
 # SQLite (see DB_FILE = legalverify.db below, near hash_password()).
@@ -114,6 +127,197 @@ section[data-testid="stSidebar"] {
     font-size: 15px;
     text-align: center;
 }
+
+/* ---------------------------------------------------------------
+   Hero animation: a document being "read" by an AI scan-beam, with
+   small particles drifting up around it (suggesting data/clauses
+   being extracted). Pure CSS -- no images, no JS.
+   --------------------------------------------------------------- */
+.scan-stage {
+    position: relative;
+    width: 220px;
+    height: 260px;
+    margin: 10px auto 0;
+}
+.scan-doc {
+    position: absolute;
+    inset: 0;
+    background: #FFFFFF;
+    border-radius: 14px;
+    box-shadow: 0 10px 35px rgba(37,99,235,0.18);
+    overflow: hidden;
+    padding: 22px 20px;
+}
+.scan-line {
+    height: 10px;
+    border-radius: 5px;
+    background: #E2E8F0;
+    margin-bottom: 14px;
+}
+.scan-line.w1 { width: 85%; }
+.scan-line.w2 { width: 95%; }
+.scan-line.w3 { width: 60%; }
+.scan-line.w4 { width: 80%; }
+.scan-line.flag {
+    width: 45%;
+    background: #FEE2E2;
+    position: relative;
+}
+.scan-line.flag::before {
+    content: "⚠";
+    position: absolute;
+    left: -2px; top: -7px;
+    font-size: 13px;
+}
+.scan-beam {
+    position: absolute;
+    left: 0; right: 0;
+    height: 46px;
+    background: linear-gradient(
+        180deg,
+        rgba(79,139,255,0) 0%,
+        rgba(79,139,255,0.35) 45%,
+        rgba(37,99,235,0.85) 50%,
+        rgba(79,139,255,0.35) 55%,
+        rgba(79,139,255,0) 100%
+    );
+    animation: scanMove 3.2s ease-in-out infinite;
+}
+@keyframes scanMove {
+    0%   { top: -46px; }
+    50%  { top: 100%; }
+    100% { top: -46px; }
+}
+.scan-particle {
+    position: absolute;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: #4F8BFF;
+    opacity: 0;
+    animation: particleFloat 3.6s ease-in infinite;
+}
+@keyframes particleFloat {
+    0%   { opacity: 0; transform: translateY(0) scale(0.6); }
+    15%  { opacity: 1; }
+    80%  { opacity: 0.6; }
+    100% { opacity: 0; transform: translateY(-90px) scale(1); }
+}
+
+/* ---------------------------------------------------------------
+   Brand name: animated gradient "shimmer" text.
+   .brand-shimmer       -> deep colors, readable on LIGHT backgrounds
+   .brand-shimmer-light -> bright colors, readable on the DARK hero
+   --------------------------------------------------------------- */
+.brand-shimmer {
+    background: linear-gradient(90deg, #1D4ED8, #7C3AED, #0E7490, #1D4ED8);
+    background-size: 300% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: #1D4ED8; /* fallback */
+    animation: brandShimmer 6s linear infinite;
+    display: inline-block;
+}
+.brand-shimmer-light {
+    background: linear-gradient(90deg, #FFFFFF, #7DD3FC, #FDE68A, #FFFFFF);
+    background-size: 300% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: #FFFFFF; /* fallback */
+    animation: brandShimmer 6s linear infinite;
+    display: inline-block;
+}
+@keyframes brandShimmer {
+    to { background-position: 300% center; }
+}
+
+/* ---------------------------------------------------------------
+   Hero: a calm deep-navy panel covering the whole top area, with
+   large glowing blobs that drift clearly and small bubbles that rise
+   continuously (pure CSS, no images/JS).
+   --------------------------------------------------------------- */
+.hero-wrap {
+    position: relative;
+    overflow: hidden;
+    border-radius: 28px;
+    min-height: 540px;
+    margin: -2rem 0 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #0B1F3A 0%, #11385E 55%, #0F4C5C 100%);
+    box-shadow: 0 18px 50px rgba(11, 31, 58, 0.35);
+}
+.hero-bg {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+}
+.hero-blob {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(55px);
+}
+.hero-blob.b1 {
+    width: 420px; height: 420px;
+    background: rgba(45, 212, 191, 0.38);
+    top: -120px; left: -60px;
+    animation: blobDrift1 11s ease-in-out infinite;
+}
+.hero-blob.b2 {
+    width: 380px; height: 380px;
+    background: rgba(56, 189, 248, 0.32);
+    top: 10%; right: -80px;
+    animation: blobDrift2 13s ease-in-out infinite;
+}
+.hero-blob.b3 {
+    width: 340px; height: 340px;
+    background: rgba(129, 140, 248, 0.30);
+    bottom: -140px; left: 30%;
+    animation: blobDrift3 15s ease-in-out infinite;
+}
+.hero-blob.b4 {
+    width: 240px; height: 240px;
+    background: rgba(245, 194, 107, 0.20);
+    bottom: 5%; right: 25%;
+    animation: blobDrift1 17s ease-in-out infinite reverse;
+}
+@keyframes blobDrift1 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    50%      { transform: translate(220px, 120px) scale(1.25); }
+}
+@keyframes blobDrift2 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    50%      { transform: translate(-260px, 90px) scale(0.85); }
+}
+@keyframes blobDrift3 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    50%      { transform: translate(180px, -150px) scale(1.2); }
+}
+.hero-bubble {
+    position: absolute;
+    bottom: -40px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%,
+                rgba(255,255,255,0.55), rgba(255,255,255,0.08));
+    border: 1px solid rgba(255,255,255,0.25);
+    animation-name: bubbleRise;
+    animation-timing-function: ease-in;
+    animation-iteration-count: infinite;
+}
+@keyframes bubbleRise {
+    0%   { transform: translate(0, 0); opacity: 0; }
+    12%  { opacity: 0.9; }
+    50%  { transform: translate(28px, -280px); }
+    100% { transform: translate(-22px, -620px); opacity: 0; }
+}
+.hero-content {
+    position: relative;
+    z-index: 1;
+    padding: 40px 24px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -170,6 +374,58 @@ def logo_html(size=80):
     ).format(b64=encoded, size=size)
 
 
+def hero_bubbles_html():
+    """Rising bubbles for the hero background, as a single-line string
+    (multi-line HTML inside st.markdown is fragile -- see logo_html)."""
+
+    # (left %, size px, duration s, delay s)
+    spec = [
+        (6, 14, 9, 0), (14, 24, 13, 3), (23, 10, 8, 5), (31, 18, 11, 1),
+        (40, 28, 15, 6), (48, 12, 9, 2), (57, 20, 12, 4), (65, 9, 8, 7),
+        (73, 26, 14, 2), (81, 15, 10, 5), (88, 22, 13, 0), (94, 11, 9, 3),
+    ]
+
+    return "".join(
+        '<div class="hero-bubble" style="left:{l}%;width:{s}px;height:{s}px;'
+        'animation-duration:{d}s;animation-delay:{y}s;"></div>'.format(
+            l=l, s=s, d=d, y=y
+        )
+        for l, s, d, y in spec
+    )
+
+
+def scan_animation_html(caption=""):
+    """
+    The AI document-scan animation (CSS-only), repurposed as the
+    loading indicator shown WHILE a contract is being analyzed,
+    instead of sitting idle on the dashboard. caption is optional
+    text shown under the animation (e.g. "...جارٍ تحليل العقد").
+    """
+
+    caption_html = (
+        '<p style="text-align:center; color:#94A3B8; margin-top:10px; '
+        'font-weight:600;">{}</p>'.format(_html.escape(caption))
+        if caption else ""
+    )
+
+    return (
+        '<div class="scan-stage">'
+        '<div class="scan-doc">'
+        '<div class="scan-line w1"></div>'
+        '<div class="scan-line w2"></div>'
+        '<div class="scan-line w3"></div>'
+        '<div class="scan-line flag"></div>'
+        '<div class="scan-line w4"></div>'
+        '<div class="scan-beam"></div>'
+        '</div>'
+        '<div class="scan-particle" style="left:10px; top:40px; animation-delay:0s;"></div>'
+        '<div class="scan-particle" style="left:190px; top:90px; animation-delay:0.8s;"></div>'
+        '<div class="scan-particle" style="left:30px; top:160px; animation-delay:1.6s;"></div>'
+        '<div class="scan-particle" style="left:175px; top:200px; animation-delay:2.3s;"></div>'
+        '</div>'
+    ) + caption_html
+
+
 # ==========================================
 # SESSION STATE
 # ==========================================
@@ -194,8 +450,8 @@ for key, value in defaults.items():
 # LANGUAGE
 # ==========================================
 lang = st.sidebar.selectbox(
-    "Language",
-    ["English", "Français", "العربية"]
+    "Language / اللغة",
+    ["العربية", "English", "Français"]
 )
 
 T = {
@@ -211,6 +467,17 @@ T = {
         "guest": "Continue as Guest",
         "logout": "Logout",
         "history": "History",
+        "accounts": "Accounts",
+        "hero_tagline": "Your smart platform for contract analysis and legal risk detection, tailored to the Algerian legal environment.",
+        "welcome_back": "Welcome, {name}. You are connected as a registered user.",
+        "guest_used_msg": "Your guest analysis has already been used. Create an account to continue.",
+        "guest_info_msg": "You are using LegalVerifyDZ as a guest. One limited contract analysis is available.",
+        "features_title": "🚀 Platform Features",
+        "feature1_title": "📄 Smart Contract Analysis",
+        "feature1_desc": "Upload PDF or Word contracts and receive legal risk analysis, clause detection, summaries and recommendations.",
+        "feature2_title": "✍️ AI Contract Generation",
+        "feature2_desc": "Generate professional legal agreements using simplified intelligent forms.",
+        "footer_text": "LegalVerifyDZ © 2026 — AI-powered legal technology for contract analysis",
     },
     "Français": {
         "dashboard": "Dashboard",
@@ -224,6 +491,17 @@ T = {
         "guest": "Continuer comme invité",
         "logout": "Déconnexion",
         "history": "Historique",
+        "accounts": "Comptes",
+        "hero_tagline": "Votre plateforme intelligente pour l'analyse de contrats et la détection des risques juridiques, adaptée à l'environnement juridique algérien.",
+        "welcome_back": "Bienvenue, {name}. Vous êtes connecté(e) en tant qu'utilisateur enregistré.",
+        "guest_used_msg": "Votre analyse invité a déjà été utilisée. Créez un compte pour continuer.",
+        "guest_info_msg": "Vous utilisez LegalVerifyDZ en mode invité. Une analyse de contrat limitée est disponible.",
+        "features_title": "🚀 Fonctionnalités de la plateforme",
+        "feature1_title": "📄 Analyse intelligente des contrats",
+        "feature1_desc": "Téléversez vos contrats PDF ou Word et recevez une analyse des risques juridiques, une détection des clauses, des résumés et des recommandations.",
+        "feature2_title": "✍️ Génération de contrats par IA",
+        "feature2_desc": "Générez des accords juridiques professionnels à l'aide de formulaires intelligents simplifiés.",
+        "footer_text": "LegalVerifyDZ © 2026 — Technologie juridique d'analyse de contrats propulsée par l'IA",
     },
     "العربية": {
         "dashboard": "لوحة التحكم",
@@ -237,10 +515,88 @@ T = {
         "guest": "الدخول كزائر",
         "logout": "تسجيل الخروج",
         "history": "السجلّ",
+        "accounts": "الحسابات",
+        "hero_tagline": "منصتك الذكية لتحليل العقود واكتشاف المخاطر القانونية وفق البيئة القانونية الجزائرية",
+        "welcome_back": "مرحبًا بك، {name}. أنت متّصل كمستخدم مسجَّل.",
+        "guest_used_msg": "لقد استخدمت بالفعل تحليل الزائر المجاني. أنشئ حسابًا للمتابعة.",
+        "guest_info_msg": "أنت تستخدم LegalVerifyDZ كزائر. يتوفر لك تحليل واحد محدود لعقد.",
+        "features_title": "🚀 ميزات المنصة",
+        "feature1_title": "📄 تحليل ذكي للعقود",
+        "feature1_desc": "ارفع عقودك بصيغة PDF أو Word واحصل على تحليل للمخاطر القانونية، واكتشاف للبنود، وملخّصات وتوصيات.",
+        "feature2_title": "✍️ توليد العقود بالذكاء الاصطناعي",
+        "feature2_desc": "أنشئ اتفاقيات قانونية احترافية باستخدام نماذج ذكية مبسَّطة.",
+        "footer_text": "LegalVerifyDZ © 2026 — تقنية قانونية لتحليل العقود مدعومة بالذكاء الاصطناعي",
     },
 }
 
 t = T[lang]
+
+# ==========================================
+# ARABIC TYPOGRAPHY + RTL  (applied once, globally, for the whole run)
+# ==========================================
+# Replaces the old scattered per-page ".block-container{direction:rtl}"
+# snippets with one global injection: a proper Arabic web font (Cairo,
+# with Tajawal as a second choice), larger/bolder body and heading
+# text, and right-to-left layout -- covering every page, including the
+# login/signup screen and the terms text, not just the report pages.
+if lang == "العربية":
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&family=Tajawal:wght@400;500;700&display=swap');
+
+        .block-container {
+            direction: rtl;
+            text-align: right;
+        }
+        .block-container {
+            font-family: 'Cairo', 'Tajawal', 'Segoe UI', sans-serif;
+        }
+        .block-container p,
+        .block-container li,
+        .block-container label,
+        .block-container button,
+        .block-container input,
+        .block-container textarea,
+        .block-container summary,
+        .block-container a,
+        .block-container td,
+        .block-container th {
+            font-family: 'Cairo', 'Tajawal', 'Segoe UI', sans-serif;
+        }
+        /* Streamlit draws its expander/selectbox arrows with an ICON FONT
+           (the arrow is literally the text "keyboard_arrow_down" rendered
+           as a ligature). Forcing Cairo on every span turned those into
+           visible English words overlapping the Arabic titles -- so icon
+           elements are explicitly given their icon font back. */
+        .block-container [data-testid="stIconMaterial"],
+        .block-container [data-testid="stExpanderToggleIcon"],
+        .block-container .material-icons,
+        .block-container .material-symbols-rounded,
+        .block-container .material-symbols-outlined,
+        .block-container span[class*="material"] {
+            font-family: 'Material Symbols Rounded', 'Material Symbols Outlined',
+                         'Material Icons' !important;
+        }
+        .block-container p,
+        .block-container li,
+        .block-container .stMarkdown {
+            font-size: 17px;
+            line-height: 1.9;
+        }
+        .block-container h1 {
+            font-family: 'Cairo', 'Tajawal', sans-serif;
+            font-weight: 800;
+        }
+        .block-container h2,
+        .block-container h3 {
+            font-family: 'Cairo', 'Tajawal', sans-serif;
+            font-weight: 700;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
 
 # ==========================================
@@ -457,6 +813,11 @@ TR = {
             "lawyer_request_success": "Your request has been recorded. We'll reach out once a partner lawyer is available.",
             "lawyer_no_partners_yet": "Note: the platform has not yet contracted with any partner lawyer. This request is queued and you will be contacted as soon as one is available.",
             "ocr_used_note": "📷 This document appears to be a scanned file. Text was extracted using OCR (optical character recognition) -- please review the extracted text below, as OCR can occasionally misread characters.",
+            "accounts_title": "👥 Registered Accounts",
+            "accounts_total": "Total accounts: {n}",
+            "accounts_export_btn": "📊 Export accounts to Excel",
+            "accounts_empty": "No accounts registered yet.",
+            "accounts_denied": "You do not have access to this page.",
         },
     },
     "Français": {
@@ -650,6 +1011,11 @@ TR = {
             "lawyer_request_success": "Votre demande a été enregistrée. Nous vous contacterons dès qu'un avocat partenaire sera disponible.",
             "lawyer_no_partners_yet": "Remarque : la plateforme n'a pas encore contractualisé avec un avocat partenaire. Votre demande est mise en file d'attente et vous serez contacté dès que possible.",
             "ocr_used_note": "📷 Ce document semble être un fichier scanné. Le texte a été extrait par OCR (reconnaissance optique de caractères) -- merci de vérifier le texte extrait ci-dessous, l'OCR pouvant parfois mal lire certains caractères.",
+            "accounts_title": "👥 Comptes enregistrés",
+            "accounts_total": "Nombre total de comptes : {n}",
+            "accounts_export_btn": "📊 Exporter les comptes en Excel",
+            "accounts_empty": "Aucun compte enregistré pour le moment.",
+            "accounts_denied": "Vous n'avez pas accès à cette page.",
         },
     },
     "العربية": {
@@ -843,6 +1209,11 @@ TR = {
             "lawyer_request_success": "تم تسجيل طلبك. سنتواصل معك بمجرد توفّر محامٍ شريك.",
             "lawyer_no_partners_yet": "ملاحظة: لم تتعاقد المنصة بعد مع أي محامٍ شريك. طلبك مُدرَج في قائمة الانتظار وسيتم التواصل معك حالما يتوفر محامٍ.",
             "ocr_used_note": "📷 يبدو أن هذا المستند ملف ممسوح ضوئيًا. تم استخراج النص باستخدام التعرف الضوئي على الحروف (OCR) — يُرجى مراجعة النص المستخرج أدناه، فقد يخطئ التعرف الضوئي أحيانًا في قراءة بعض الأحرف.",
+            "accounts_title": "👥 الحسابات المسجَّلة",
+            "accounts_total": "إجمالي الحسابات: {n}",
+            "accounts_export_btn": "📊 تصدير الحسابات إلى Excel",
+            "accounts_empty": "لا توجد حسابات مسجَّلة بعد.",
+            "accounts_denied": "لا تملك صلاحية الوصول إلى هذه الصفحة.",
         },
     },
 }
@@ -851,6 +1222,143 @@ TR = {
 def _tr(lang_key):
     """Safe lookup: unknown/None language falls back to English."""
     return TR.get(lang_key, TR["English"])
+
+
+# ==========================================
+# LEGAL BASIS (Algerian law) attached to each finding
+# ==========================================
+# For every finding the platform can raise, this adds the POTENTIALLY
+# applicable Algerian legal provisions -- once to the "issue" text and once
+# to the "recommendation" text -- in the report language the user chose.
+#
+# Kept as a separate, auditable table (instead of being buried inside the
+# finding templates above) so each article number can be reviewed and
+# corrected in one place without touching the analysis logic.
+#
+# Sources checked while writing this table (Algerian university course
+# materials and published legal studies):
+#   - Code civil (Ordonnance 75-58 du 26/09/1975, modifiée):
+#       art. 54 (définition du contrat), 106 (force obligatoire),
+#       107 (exécution de bonne foi), 119 / 120 / 122 (résolution),
+#       123 (exception d'inexécution), 124 bis (abus de droit),
+#       176 (indemnisation), 178 (aménagement de la responsabilité
+#       contractuelle), 179-180 (mise en demeure), 183-185 (clause pénale),
+#       549-570 (contrat d'entreprise).
+#   - Code de procédure civile et administrative (Loi 08-09 du 25/02/2008):
+#       art. 37 (compétence territoriale), 990 et s. (conciliation et
+#       médiation), 1006 et s. (arbitrage).
+# These are POTENTIAL references presented as such in the report text; the
+# applicable provision always depends on the contract type and the facts.
+
+_LEGAL_AR = {
+    "TERMINATION_HIGH": (
+        "⚖️ المواد المحتملة: المادة 106 من القانون المدني (العقد شريعة المتعاقدين فلا يجوز نقضه ولا تعديله إلا باتفاق الطرفين أو للأسباب التي يقررها القانون)، والمادة 107 (وجوب تنفيذ العقد بحسن نية)، والمادة 124 مكرر (التعسف في استعمال الحق إذا استُعمل حق الإنهاء استعمالًا تعسفيًا).",
+        "⚖️ المرجع القانوني المحتمل: المادتان 119 و120 من القانون المدني (الفسخ القضائي والفسخ الاتفاقي، ولا يعفي الشرط الفاسخ من الإعذار)، والمادة 122 (آثار الفسخ)، وأحكام المقاولة (المواد 549 إلى 570) إن كان العقد في حقيقته عقد مقاولة.",
+    ),
+    "TERMINATION_MISSING": (
+        "⚖️ المواد المحتملة: المادة 106 من القانون المدني (لا يجوز نقض العقد إلا باتفاق الطرفين أو للأسباب التي يقررها القانون)، والمادتان 119 و120 (الفسخ القضائي والفسخ الاتفاقي).",
+        "⚖️ المرجع القانوني المحتمل: المواد 119 و120 و122 من القانون المدني (الفسخ وآثاره)، والمادتان 179 و180 (الإعذار).",
+    ),
+    "PENALTY_EXCLUDED": (
+        "⚖️ المواد المحتملة: المواد 183 إلى 185 من القانون المدني (الشرط الجزائي/التعويض الاتفاقي: تقدير مسبق للتعويض يُعفي الدائن من إثبات الضرر، وللقاضي سلطة تعديله)، وفي غيابه تُطبَّق القواعد العامة للتعويض (المادة 176).",
+        "⚖️ المرجع القانوني المحتمل: المادة 183 من القانون المدني (جواز تحديد التعويض مسبقًا في العقد)، والمادة 184 (سلطة القاضي في تخفيضه)، والمادتان 179 و180 (الإعذار قبل استحقاق التعويض عن التأخير).",
+    ),
+    "PAYMENT_MISSING": (
+        "⚖️ المواد المحتملة: المادة 123 من القانون المدني (الدفع بعدم التنفيذ في العقود الملزمة للجانبين، وأجل الأداء هو ما يحدد متى يقوم الإخلال)، والمادة 176 (التعويض عن التأخير في التنفيذ)، والمادة 549 إن كان العقد مقاولة (الأجر عنصر أساسي فيه).",
+        "⚖️ المرجع القانوني المحتمل: المادتان 179 و180 من القانون المدني (إعذار المدين شرط للتعويض عن التأخير)، والمادة 176 (التعويض عن التأخير)، والمادة 119 (فسخ العقد عند عدم الوفاء).",
+    ),
+    "DISPUTE_MISSING": (
+        "⚖️ المواد المحتملة: المادة 37 من قانون الإجراءات المدنية والإدارية (الاختصاص الإقليمي لمحكمة موطن المدعى عليه، وفي حالة اختيار موطن تؤول الجهة التي يقع فيها الموطن المختار)، والمادة 1006 وما بعدها (التحكيم).",
+        "⚖️ المرجع القانوني المحتمل: المادة 37 من قانون الإجراءات المدنية والإدارية (النص على موطن مختار في العقد يحدد الجهة القضائية المختصة)، والمواد 990 وما بعدها (الصلح والوساطة)، والمادة 1006 وما بعدها (التحكيم).",
+    ),
+    "LIABILITY_MISSING": (
+        "⚖️ المواد المحتملة: المادة 176 من القانون المدني (التعويض عن عدم تنفيذ الالتزام أو التأخير فيه)، والمادة 178 (جواز الاتفاق على تعديل قواعد المسؤولية العقدية تشديدًا أو تخفيفًا، مع بطلان الإعفاء من المسؤولية عن الغش أو الخطأ الجسيم)، والمادة 106 (القوة الملزمة للعقد).",
+        "⚖️ المرجع القانوني المحتمل: المادة 178 من القانون المدني (تحديد نطاق المسؤولية وحدودها بالاتفاق)، والمادة 176 (التعويض)، والمادة 107 (تنفيذ العقد بحسن نية).",
+    ),
+    "PARTIES_MISSING": (
+        "⚖️ المواد المحتملة: المادة 54 من القانون المدني (العقد اتفاق يلتزم بموجبه شخص أو عدة أشخاص نحو شخص أو عدة أشخاص آخرين بمنح أو فعل أو عدم فعل شيء ما)، والمادة 106 (العقد شريعة المتعاقدين) — ويقتضي ذلك تحديد أطراف العقد تحديدًا نافيًا للجهالة.",
+        "⚖️ المرجع القانوني المحتمل: المادة 54 من القانون المدني (تعريف العقد وأطرافه).",
+    ),
+}
+
+_LEGAL_FR = {
+    "TERMINATION_HIGH": (
+        "⚖️ Textes potentiellement applicables : art. 106 du Code civil algérien (le contrat fait la loi des parties : il ne peut être révoqué ni modifié que par accord des parties ou pour les causes prévues par la loi), art. 107 (exécution de bonne foi) et art. 124 bis (abus de droit, si le droit de résiliation est exercé de façon abusive).",
+        "⚖️ Références juridiques potentielles : art. 119 et 120 du Code civil (résolution judiciaire et conventionnelle ; la clause résolutoire ne dispense pas de la mise en demeure), art. 122 (effets de la résolution) et dispositions sur le contrat d'entreprise (art. 549 à 570) si le contrat en est un en réalité.",
+    ),
+    "TERMINATION_MISSING": (
+        "⚖️ Textes potentiellement applicables : art. 106 du Code civil algérien (le contrat ne peut être révoqué que par accord des parties ou pour les causes prévues par la loi) et art. 119 et 120 (résolution judiciaire et conventionnelle).",
+        "⚖️ Références juridiques potentielles : art. 119, 120 et 122 du Code civil (résolution et ses effets) et art. 179 et 180 (mise en demeure).",
+    ),
+    "PENALTY_EXCLUDED": (
+        "⚖️ Textes potentiellement applicables : art. 183 à 185 du Code civil algérien (clause pénale : évaluation anticipée des dommages-intérêts qui dispense le créancier de prouver le préjudice, et que le juge peut modifier) ; à défaut, les règles générales de l'indemnisation s'appliquent (art. 176).",
+        "⚖️ Références juridiques potentielles : art. 183 du Code civil (possibilité de fixer l'indemnité à l'avance dans le contrat), art. 184 (pouvoir du juge de la réduire) et art. 179 et 180 (mise en demeure préalable aux dommages-intérêts moratoires).",
+    ),
+    "PAYMENT_MISSING": (
+        "⚖️ Textes potentiellement applicables : art. 123 du Code civil algérien (exception d'inexécution dans les contrats synallagmatiques ; le délai de paiement détermine à partir de quand il y a manquement), art. 176 (indemnisation du retard) et art. 549 si le contrat est un contrat d'entreprise (la rémunération en est un élément essentiel).",
+        "⚖️ Références juridiques potentielles : art. 179 et 180 du Code civil (la mise en demeure conditionne l'indemnisation du retard), art. 176 (indemnisation du retard) et art. 119 (résolution pour inexécution).",
+    ),
+    "DISPUTE_MISSING": (
+        "⚖️ Textes potentiellement applicables : art. 37 du Code de procédure civile et administrative (compétence territoriale du tribunal du domicile du défendeur ; en cas d'élection de domicile, celle de la juridiction du domicile élu) et art. 1006 et suivants (arbitrage).",
+        "⚖️ Références juridiques potentielles : art. 37 du Code de procédure civile et administrative (stipuler un domicile élu dans le contrat détermine la juridiction compétente), art. 990 et suivants (conciliation et médiation) et art. 1006 et suivants (arbitrage).",
+    ),
+    "LIABILITY_MISSING": (
+        "⚖️ Textes potentiellement applicables : art. 176 du Code civil algérien (indemnisation de l'inexécution ou du retard), art. 178 (aménagement conventionnel de la responsabilité contractuelle, avec nullité de l'exonération en cas de dol ou de faute lourde) et art. 106 (force obligatoire du contrat).",
+        "⚖️ Références juridiques potentielles : art. 178 du Code civil (définir par accord l'étendue et les limites de la responsabilité), art. 176 (indemnisation) et art. 107 (exécution de bonne foi).",
+    ),
+    "PARTIES_MISSING": (
+        "⚖️ Textes potentiellement applicables : art. 54 du Code civil algérien (le contrat est une convention par laquelle une ou plusieurs personnes s'obligent envers une ou plusieurs autres à donner, faire ou ne pas faire quelque chose) et art. 106 (force obligatoire) -- ce qui suppose d'identifier les parties sans ambiguïté.",
+        "⚖️ Références juridiques potentielles : art. 54 du Code civil (définition du contrat et de ses parties).",
+    ),
+}
+
+_LEGAL_EN = {
+    "TERMINATION_HIGH": (
+        "⚖️ Potentially applicable provisions: Art. 106 of the Algerian Civil Code (the contract is the law of the parties: it may be neither revoked nor amended except by mutual agreement or on grounds provided by law), Art. 107 (performance in good faith) and Art. 124 bis (abuse of right, if the termination right is exercised abusively).",
+        "⚖️ Potential legal references: Arts. 119 and 120 of the Civil Code (judicial and contractual resolution; a resolutory clause does not remove the need for formal notice), Art. 122 (effects of resolution) and the contract-for-work provisions (Arts. 549-570) if the agreement is in substance such a contract.",
+    ),
+    "TERMINATION_MISSING": (
+        "⚖️ Potentially applicable provisions: Art. 106 of the Algerian Civil Code (a contract may not be revoked except by mutual agreement or on grounds provided by law) and Arts. 119 and 120 (judicial and contractual resolution).",
+        "⚖️ Potential legal references: Arts. 119, 120 and 122 of the Civil Code (resolution and its effects) and Arts. 179 and 180 (formal notice).",
+    ),
+    "PENALTY_EXCLUDED": (
+        "⚖️ Potentially applicable provisions: Arts. 183 to 185 of the Algerian Civil Code (penalty clause: an advance assessment of damages that relieves the creditor from proving harm and that the judge may adjust); without it, the general rules on compensation apply (Art. 176).",
+        "⚖️ Potential legal references: Art. 183 of the Civil Code (damages may be fixed in advance in the contract), Art. 184 (the judge's power to reduce them) and Arts. 179 and 180 (formal notice before damages for delay).",
+    ),
+    "PAYMENT_MISSING": (
+        "⚖️ Potentially applicable provisions: Art. 123 of the Algerian Civil Code (exception of non-performance in bilateral contracts; the payment deadline determines when a breach occurs), Art. 176 (compensation for delay) and Art. 549 if the contract is a contract for work (remuneration is an essential element).",
+        "⚖️ Potential legal references: Arts. 179 and 180 of the Civil Code (formal notice is a condition for compensation for delay), Art. 176 (compensation for delay) and Art. 119 (resolution for non-performance).",
+    ),
+    "DISPUTE_MISSING": (
+        "⚖️ Potentially applicable provisions: Art. 37 of the Code of Civil and Administrative Procedure (territorial jurisdiction of the court of the defendant's domicile; where a domicile is elected, the court of that domicile) and Art. 1006 et seq. (arbitration).",
+        "⚖️ Potential legal references: Art. 37 of the Code of Civil and Administrative Procedure (stating an elected domicile in the contract determines the competent court), Art. 990 et seq. (conciliation and mediation) and Art. 1006 et seq. (arbitration).",
+    ),
+    "LIABILITY_MISSING": (
+        "⚖️ Potentially applicable provisions: Art. 176 of the Algerian Civil Code (compensation for non-performance or delay), Art. 178 (contractual adjustment of contractual liability, with exclusion clauses void for fraud or gross negligence) and Art. 106 (binding force of the contract).",
+        "⚖️ Potential legal references: Art. 178 of the Civil Code (defining the scope and limits of liability by agreement), Art. 176 (compensation) and Art. 107 (performance in good faith).",
+    ),
+    "PARTIES_MISSING": (
+        "⚖️ Potentially applicable provisions: Art. 54 of the Algerian Civil Code (a contract is an agreement by which one or several persons undertake towards one or several others to give, do or not do something) and Art. 106 (binding force) -- which requires the parties to be identified without ambiguity.",
+        "⚖️ Potential legal references: Art. 54 of the Civil Code (definition of the contract and its parties).",
+    ),
+}
+
+# Findings that share the same legal basis.
+for _table in (_LEGAL_AR, _LEGAL_FR, _LEGAL_EN):
+    _table["PENALTY_MISSING"] = _table["PENALTY_EXCLUDED"]
+    _table["PAYMENT_VAGUE"] = _table["PAYMENT_MISSING"]
+
+LEGAL_BASIS = {
+    "العربية": _LEGAL_AR,
+    "Français": _LEGAL_FR,
+    "English": _LEGAL_EN,
+}
+
+for _lang_key, _table in LEGAL_BASIS.items():
+    for _finding_key, (_issue_sfx, _rec_sfx) in _table.items():
+        _tpl = TR[_lang_key]["findings"][_finding_key]
+        _tpl["issue"] = _tpl["issue"] + " " + _issue_sfx
+        _tpl["recommendation"] = _tpl["recommendation"] + " " + _rec_sfx
 
 
 
@@ -951,6 +1459,24 @@ def ensure_users_file():
         )
         """
     )
+
+    # Migration-safe: add the consent columns to a `users` table that
+    # may already exist from before this feature was added (ALTER TABLE
+    # ADD COLUMN, skipped if the column is already there).
+    existing_columns = {
+        row[1] for row in
+        connection.execute("PRAGMA table_info(users)").fetchall()
+    }
+
+    if "consent_terms_at" not in existing_columns:
+        connection.execute(
+            "ALTER TABLE users ADD COLUMN consent_terms_at TEXT"
+        )
+
+    if "consent_ai_training" not in existing_columns:
+        connection.execute(
+            "ALTER TABLE users ADD COLUMN consent_ai_training INTEGER DEFAULT 0"
+        )
 
     connection.execute(
         """
@@ -1179,9 +1705,44 @@ def get_users():
             "Status": row["status"],
             "Created At": row["created_at"],
             "Last Login": row["last_login"],
+            "Consent Date": row["consent_terms_at"] if "consent_terms_at" in row.keys() else "",
+            "AI Training Consent": (
+                "Yes" if row["consent_ai_training"] else "No"
+            ) if "consent_ai_training" in row.keys() else "",
         }
         for row in rows
     ]
+
+
+def export_users_excel():
+    """
+    Build an .xlsx snapshot of every registered user, admin-only --
+    this is what replaces the old users.xlsx file that used to be
+    written automatically on every signup. Unlike that old file, this
+    one is generated on demand from the live SQLite database, so it
+    can never go out of sync or silently stop being updated: open the
+    Accounts page and click Export any time to get the current list.
+
+    Password hashes are deliberately excluded from the export.
+    """
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Accounts"
+
+    headers = [
+        "User ID", "Name", "Email", "Company",
+        "Plan", "Status", "Created At", "Last Login",
+        "Consent Date", "AI Training Consent",
+    ]
+    sheet.append(headers)
+
+    for user in get_users():
+        sheet.append([user.get(column, "") for column in headers])
+
+    buffer = _io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
 
 
 def email_exists(email):
@@ -1201,7 +1762,16 @@ def email_exists(email):
     return row is not None
 
 
-def create_user(name, email, company, password):
+def create_user(name, email, company, password, consent_ai_training=False):
+    """
+    consent_ai_training: the SEPARATE, OPTIONAL consent for using the
+    user's uploaded contracts (anonymized) to improve the analysis
+    engine in the future -- distinct from the mandatory terms/privacy
+    consent, which this function assumes was already verified by the
+    caller (the signup form) before create_user() is even called, and
+    is recorded here as the signup timestamp itself.
+    """
+
     ensure_users_file()
 
     if email_exists(email):
@@ -1214,14 +1784,16 @@ def create_user(name, email, company, password):
     ).fetchone()[0]
 
     user_id = "LV-{:04d}".format(user_count + 1)
+    now_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     try:
         connection.execute(
             """
             INSERT INTO users (
                 user_id, name, email, company, password_hash,
-                plan, status, created_at, last_login
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                plan, status, created_at, last_login,
+                consent_terms_at, consent_ai_training
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -1231,8 +1803,10 @@ def create_user(name, email, company, password):
                 hash_password(password),
                 "Free",
                 "Active",
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                now_stamp,
                 "",
+                now_stamp,
+                1 if consent_ai_training else 0,
             )
         )
         connection.commit()
@@ -1299,6 +1873,58 @@ def authenticate_user(email, password):
     }
 
 # ==========================================
+# PRIVACY / CONSENT TERMS
+# ==========================================
+# Grounded in Algerian Law n° 18-07 of 10 June 2018 on the protection
+# of natural persons in the processing of personal data (as amended
+# and supplemented by Law n° 25-11 of 24 July 2025), overseen by the
+# National Authority for the Protection of Personal Data (ANPDP,
+# anpdp.dz). This text is a DRAFT meant to give the platform a
+# reasonable, good-faith starting point -- it is not a substitute for
+# review by a qualified lawyer before real-world/public use, exactly
+# like the AI analysis the platform itself produces for contracts.
+PRIVACY_TERMS_AR = """
+**1. من المسؤول عن معالجة بياناتك؟**
+منصة LegalVerifyDZ هي المسؤولة عن معالجة البيانات الموضحة في هذا النص، باعتبارها "المسؤول عن المعالجة" وفق القانون رقم 18-07 المؤرخ في 10 يونيو 2018 المتعلق بحماية الأشخاص الطبيعيين في مجال معالجة المعطيات ذات الطابع الشخصي، المعدَّل والمتمَّم بالقانون رقم 25-11 المؤرخ في 24 يوليو 2025، تحت إشراف السلطة الوطنية لحماية المعطيات ذات الطابع الشخصي (ANPDP).
+
+**2. ما هي البيانات التي نجمعها؟**
+- بيانات الحساب: الاسم الكامل، البريد الإلكتروني، اسم الشركة (إن وُجد)، وكلمة المرور (مُشفَّرة ولا تُخزَّن كنص واضح).
+- محتوى العقود التي ترفعها لتحليلها، بما في ذلك النص المستخرج منها.
+- بيانات الاستخدام: سجلّ التحليلات، إعدادات اللغة، وتاريخ آخر تسجيل دخول.
+
+**3. لماذا نجمع هذه البيانات؟**
+- لإنشاء حسابك وإدارته والسماح لك بتسجيل الدخول.
+- لتحليل العقود التي ترفعها وعرض النتائج لك وحفظها في سجلّك الشخصي.
+- للتواصل معك بخصوص طلبك في حال اخترت "طلب مراجعة محامٍ".
+- لتحسين جودة المنصة وإصلاح الأعطال التقنية.
+
+**4. الموافقة الصريحة**
+وفقًا لهذا القانون، لا تتم معالجة بياناتك إلا بموافقتك الصريحة. بتسجيلك في المنصة، فإنك توافق صراحةً على معالجة بياناتك للأغراض المذكورة في البند 3 أعلاه.
+
+**5. استخدام عقودك لتدريب محرك التحليل (بند منفصل واختياري)**
+قد ترغب المنصة مستقبلًا في استخدام نصوص العقود المُحلَّلة — بعد إخفاء هويتها وحذف أي بيانات تعريفية (أسماء الأطراف، الأرقام، التفاصيل الخاصة) — لتحسين دقة محرك التحليل. **هذا الاستخدام منفصل تمامًا عن الموافقة الأساسية، اختياري بالكامل، ولا يؤثر رفضه على استخدامك العادي للمنصة بأي شكل.** يمكنك تغيير قرارك بخصوصه في أي وقت بالتواصل معنا.
+
+**6. مدة الاحتفاظ بالبيانات**
+يُحتفَظ ببياناتك طوال مدة نشاط حسابك فقط، وللمدة اللازمة لتحقيق الأغراض المذكورة أعلاه، ولا تتجاوز ذلك.
+
+**7. حقوقك وفق القانون 18-07**
+يُقرّ لك القانون الحقوق التالية، ويمكنك ممارستها بالتواصل معنا عبر البريد الإلكتروني للمنصة:
+- **الحق في الإعلام**: معرفة كيفية معالجة بياناتك والغرض منها.
+- **الحق في الولوج**: الحصول على نسخة من بياناتك المحفوظة لدينا.
+- **الحق في التصحيح والتحيين**: تعديل أي بيانات غير دقيقة أو ناقصة.
+- **الحق في المسح**: طلب حذف حسابك وبياناتك نهائيًا.
+- **الحق في الاعتراض**: رفض معالجة بياناتك لأسباب مشروعة.
+- **حق تقديم شكوى**: لدى السلطة الوطنية لحماية المعطيات ذات الطابع الشخصي (anpdp.dz) في حال اعتقادك بوجود مخالفة.
+
+**8. أمن البيانات**
+نعتمد تدابير تقنية معقولة لحماية بياناتك (تشفير كلمات المرور، قاعدة بيانات غير متاحة للعموم)، مع العلم أنه لا يوجد نظام آمن بنسبة 100%، ولا يُنصَح برفع عقود تحتوي معلومات بالغة الحساسية (كأرقام حسابات مصرفية أو بيانات هوية رسمية) ما لم يكن ذلك ضروريًا.
+
+**9. عدم المشاركة مع أطراف ثالثة**
+لا تُشارَك بياناتك مع أي طرف ثالث دون موافقتك الصريحة، باستثناء حالة طلبك "مراجعة محامٍ" (حيث تُشارَك المعلومات اللازمة فقط مع محامٍ شريك عند توفره)، أو إن أَلزَمنا القانون بذلك.
+"""
+
+
+# ==========================================
 # AUTHENTICATION SCREEN
 # ==========================================
 def show_auth_screen():
@@ -1306,7 +1932,7 @@ def show_auth_screen():
         """
     <div style='text-align:center; padding:35px 10px 10px;'>
         {logo}
-        <h1 style='color:#4F8BFF; margin-top:8px;'>LegalVerifyDZ</h1>
+        <h1 class="brand-shimmer" style='margin-top:8px;'>LegalVerifyDZ</h1>
         <h3>AI-Powered Contract Intelligence Platform</h3>
         <p style='color:#888;'>
         Create an account or continue as a guest.
@@ -1387,6 +2013,24 @@ def show_auth_screen():
             key="auth_signup_password2"
         )
 
+        with st.expander("📜 الشروط وسياسة حماية المعطيات الشخصية (اقرأها قبل المتابعة)"):
+            st.markdown(PRIVACY_TERMS_AR)
+
+        consent_terms = st.checkbox(
+            "أقرّ بأنني قرأت الشروط وسياسة حماية المعطيات الشخصية أعلاه، "
+            "وأوافق عليها صراحةً وفق القانون رقم 18-07 المعدَّل "
+            "والمتمَّم بالقانون رقم 25-11 (إلزامي)",
+            key="auth_signup_consent_terms"
+        )
+
+        consent_ai = st.checkbox(
+            "أوافق (اختياري) على استخدام نصوص عقودي بعد إخفاء هويتها "
+            "بالكامل لتحسين وتدريب محرك التحليل مستقبلًا -- هذا الخيار "
+            "لا يؤثر إطلاقًا على استخدامي العادي للمنصة إن تركته "
+            "غير مفعَّل",
+            key="auth_signup_consent_ai"
+        )
+
         if st.button(
             "Create Account",
             key="signup_button",
@@ -1406,12 +2050,18 @@ def show_auth_screen():
                 st.error(
                     "This email is already registered."
                 )
+            elif not consent_terms:
+                st.error(
+                    "يجب الموافقة على الشروط وسياسة حماية المعطيات "
+                    "الشخصية للمتابعة."
+                )
             else:
                 ok, message = create_user(
                     name,
                     email,
                     company,
-                    password
+                    password,
+                    consent_ai_training=consent_ai
                 )
 
                 if ok:
@@ -1980,12 +2630,6 @@ def display_full_report(result, filename="Contract", findings=None, analysis_id=
     counts = severity_counts(clean)
     score = compliance_score(data["risk"], data["confidence"], counts)
 
-    if lang == "العربية":
-        st.markdown(
-            "<style>.block-container{direction:rtl;text-align:right;}</style>",
-            unsafe_allow_html=True
-        )
-
     # ---------------- header ----------------
     st.markdown(
         '<div class="{}">⚠️ {}: {} | {}: {}%</div>'.format(
@@ -2248,12 +2892,6 @@ def display_guest_report(result):
 
     ru = TR.get(lang, TR["English"])["report_ui"]
 
-    if lang == "العربية":
-        st.markdown(
-            "<style>.block-container{direction:rtl;text-align:right;}</style>",
-            unsafe_allow_html=True
-        )
-
     st.markdown(
         f'<div class="{cls}">⚠️ {t["risk"]}: '
         f'{lvl} | {t["score"]}: {risk}%</div>',
@@ -2310,7 +2948,7 @@ with st.sidebar:
         """
     <div style='text-align:center; padding:10px;'>
         {logo}
-        <h2 style='margin-bottom:0; margin-top:8px;'>LegalVerifyDZ</h2>
+        <h2 class="brand-shimmer" style='margin-bottom:0; margin-top:8px;'>LegalVerifyDZ</h2>
         <p style='color:gray; font-size:14px;'>
         AI Legal Platform
         </p>
@@ -2370,6 +3008,12 @@ with st.sidebar:
     if st.session_state.authenticated:
         nav_options.append(t["history"])
 
+        current_user = st.session_state.get("user") or {}
+        current_email = str(current_user.get("Email", "")).strip().lower()
+
+        if current_email in ADMIN_EMAILS:
+            nav_options.append(t["accounts"])
+
     page = st.radio(
         "Navigation",
         nav_options
@@ -2392,99 +3036,77 @@ if st.session_state.auth_screen:
 # ==========================================
 if page == t["dashboard"]:
 
+    # Hero: calm navy panel covering the whole top area, with drifting
+    # glow blobs + rising bubbles behind the brand and the tagline.
     st.markdown(
-        """
-        <div style="text-align:center; padding:40px 20px;">
-            {logo}
-            <h1 style="font-size:48px; color:#4F8BFF; margin-top:12px;">
-                LegalVerifyDZ
-            </h1>
-            <h3 style="color:#BBBBBB;">
-                AI-Powered Contract Intelligence Platform
-            </h3>
-            <p style="font-size:18px; color:#999999; max-width:800px; margin:auto;">
-                Analyze contracts instantly, detect legal risks, extract
-                critical clauses, and generate professional agreements
-                with AI assistance.
-            </p>
-        </div>
-        """.format(logo=logo_html(100)),
+        '<div class="hero-wrap">'
+        '<div class="hero-bg">'
+        '<div class="hero-blob b1"></div>'
+        '<div class="hero-blob b2"></div>'
+        '<div class="hero-blob b3"></div>'
+        '<div class="hero-blob b4"></div>'
+        + hero_bubbles_html() +
+        '</div>'
+        '<div class="hero-content" style="text-align:center;">'
+        + logo_html(110) +
+        '<h1 class="brand-shimmer-light" style="font-size:54px; margin:14px 0 8px;">'
+        'LegalVerifyDZ</h1>'
+        '<p style="font-size:21px; color:#E2E8F0; max-width:820px; '
+        'margin:auto; font-weight:600; line-height:1.9;">'
+        + _html.escape(t["hero_tagline"]) +
+        '</p>'
+        '</div>'
+        '</div>',
         unsafe_allow_html=True
     )
 
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.markdown("""
-        <div class='card' style='text-align:center;'>
-        <h2>120+</h2>
-        <p>Contracts Analyzed</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col2:
-        st.markdown("""
-        <div class='card' style='text-align:center;'>
-        <h2>85%</h2>
-        <p>Detection Accuracy</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col3:
-        st.markdown("""
-        <div class='card' style='text-align:center;'>
-        <h2>3</h2>
-        <p>Supported Languages</p>
-        </div>
-        """, unsafe_allow_html=True)
-
     if st.session_state.authenticated:
         st.success(
-            f"Welcome, {st.session_state.user['Name']}. "
-            "You are connected as a registered user."
+            t["welcome_back"].format(name=st.session_state.user['Name'])
         )
     elif st.session_state.guest_used:
-        st.warning(
-            "Your guest analysis has already been used. "
-            "Create an account to continue."
-        )
+        st.warning(t["guest_used_msg"])
     else:
-        st.info(
-            "You are using LegalVerifyDZ as a guest. "
-            "One limited contract analysis is available."
-        )
+        st.info(t["guest_info_msg"])
 
-    st.markdown("## 🚀 Platform Features")
+    st.markdown("## " + t["features_title"])
 
     f1, f2 = st.columns(2)
 
     with f1:
-        st.markdown("""
-        <div class='card'>
-        <h3>📄 Smart Contract Analysis</h3>
-        <p>
-        Upload PDF or Word contracts and receive legal risk
-        analysis, clause detection, summaries and recommendations.
-        </p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            """
+            <div class='card'>
+            <h3>{title}</h3>
+            <p>{desc}</p>
+            </div>
+            """.format(
+                title=_html.escape(t["feature1_title"]),
+                desc=_html.escape(t["feature1_desc"])
+            ),
+            unsafe_allow_html=True
+        )
 
     with f2:
-        st.markdown("""
-        <div class='card'>
-        <h3>✍️ AI Contract Generation</h3>
-        <p>
-        Generate professional legal agreements using simplified
-        intelligent forms.
-        </p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            """
+            <div class='card'>
+            <h3>{title}</h3>
+            <p>{desc}</p>
+            </div>
+            """.format(
+                title=_html.escape(t["feature2_title"]),
+                desc=_html.escape(t["feature2_desc"])
+            ),
+            unsafe_allow_html=True
+        )
 
-    st.markdown("""
-    <div style='text-align:center; color:gray; padding:20px;'>
-    LegalVerifyDZ © 2026 — AI-powered legal technology
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        "<div style='text-align:center; color:gray; padding:20px;'>"
+        + _html.escape(t["footer_text"])
+        + "</div>",
+        unsafe_allow_html=True
+    )
 
 
 # ==========================================
@@ -2560,11 +3182,14 @@ elif page == t["analysis"]:
         liability provisions and a penalty clause.
         """
 
-        with st.spinner(
-            "🤖 AI is analyzing the contract..."
-        ):
-            import time
-            time.sleep(1)
+        loading_slot = st.empty()
+        loading_slot.markdown(
+            scan_animation_html("🤖 جارٍ تحليل العقد..." if lang == "العربية" else "🤖 AI is analyzing the contract..."),
+            unsafe_allow_html=True
+        )
+        import time
+        time.sleep(1)
+        loading_slot.empty()
 
         result = analyse(demo_text, report_lang=lang)
 
@@ -2637,6 +3262,11 @@ elif page == t["analysis"]:
         st.session_state.analysis_text = pasted_text
         st.session_state.analysis_filename = "Pasted Contract"
 
+    st.info(
+        "If your PDF is scanned, text extraction may not work. "
+        "OCR will be added in a later development stage."
+    )
+
     # ---------------------------------
     # Analyze
     # ---------------------------------
@@ -2667,11 +3297,14 @@ elif page == t["analysis"]:
             )
         else:
 
-            with st.spinner(
-                "🤖 AI is analyzing the contract..."
-            ):
-                import time
-                time.sleep(1)
+            loading_slot = st.empty()
+            loading_slot.markdown(
+                scan_animation_html("🤖 جارٍ تحليل العقد..." if lang == "العربية" else "🤖 AI is analyzing the contract..."),
+                unsafe_allow_html=True
+            )
+            import time
+            time.sleep(1)
+            loading_slot.empty()
 
             result = analyse(text_to_analyze, report_lang=lang)
 
@@ -2797,3 +3430,43 @@ elif page == t["history"]:
                         st.rerun()
 
                     st.markdown('</div>', unsafe_allow_html=True)
+
+# ==========================================
+# ACCOUNTS  (platform owner/operator only)
+# ==========================================
+elif page == t["accounts"]:
+
+    ru = TR.get(lang, TR["English"])["report_ui"]
+
+    current_user = st.session_state.get("user") or {}
+    current_email = str(current_user.get("Email", "")).strip().lower()
+
+    # Defense in depth: re-check admin status here too, independent of
+    # whether the nav item itself was shown, so this page can never be
+    # reached by email/URL guessing or a stale session.
+    if not st.session_state.authenticated or current_email not in ADMIN_EMAILS:
+        st.error(ru["accounts_denied"])
+        st.stop()
+
+    st.markdown("## " + ru["accounts_title"])
+
+    users = get_users()
+
+    st.caption(ru["accounts_total"].format(n=len(users)))
+
+    if not users:
+        st.info(ru["accounts_empty"])
+    else:
+        display_rows = [
+            {k: v for k, v in user.items() if k != "Password Hash"}
+            for user in users
+        ]
+        st.dataframe(display_rows, use_container_width=True)
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M")
+        st.download_button(
+            ru["accounts_export_btn"],
+            export_users_excel(),
+            file_name="LegalVerifyDZ_accounts_{}.xlsx".format(stamp),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )

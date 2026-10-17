@@ -255,9 +255,25 @@ def build_findings(ctx, fx, ox):
             "دون غرامة"
         ]
 
+        # Phrase patterns (above) plus negation regexes, so wordings like
+        # "No late-payment or delay penalty shall apply" are caught too.
+        no_penalty_regexes = [
+            r"\bno\b[^.;]{0,50}\bpenalt",
+            r"\bwithout\b[^.;]{0,20}\bpenalt",
+            r"\b(?:free of|exempt from)\b[^.;]{0,20}\bpenalt",
+            r"\bnot\b[^.;]{0,25}\bsubject to\b[^.;]{0,20}\bpenalt",
+            r"\b(?:aucune?|pas de|sans)\b[^.;]{0,40}\b(?:pénalit|penalit|indemnit)",
+            r"لا\s+(?:توجد|يوجد|تفرض|تُفرض|تطبق|تُطبق|يترتب|يكون)"
+            r"[^.؛]{0,30}(?:غرامة|غرامات|تعويض|جزاء)",
+            r"(?:دون|بدون)\s+(?:أي\s+)?(?:غرامة|غرامات)",
+        ]
+
         no_penalty = any(
             pattern in low
             for pattern in no_penalty_patterns
+        ) or any(
+            re.search(rx, low, re.I)
+            for rx in no_penalty_regexes
         )
 
         if no_penalty:
@@ -327,7 +343,14 @@ def build_findings(ctx, fx, ox):
                 or "الدفع" in low
             )
             and not re.search(
-                r"\b\d+\s*(?:jours?|days?|j|يوم|أيام)\b",
+                r"\b\d+\s*\)?\s*(?:jours?|days?|j\b|يوم|يومًا|يوما|أيام)",
+                low,
+                re.I
+            )
+            and not re.search(
+                r"(?:quinze|trente|soixante|quatre-vingt-dix|fifteen|thirty"
+                r"|sixty|ninety|خمسة عشر|ثلاثين|ستين|تسعين)\s*(?:\(\d+\)\s*)?"
+                r"(?:jours?|days?|يوم|يومًا|يوما|أيام)",
                 low,
                 re.I
             )

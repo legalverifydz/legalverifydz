@@ -526,7 +526,274 @@ def extract_all(text, report_lang=None):
 
         return final_parties[:4]
 
-    parties = extract_parties()
+    # ---------------------------------------------------------------
+    # Tier 1: parties named in the contract's PREAMBLE
+    # ---------------------------------------------------------------
+    # extract_parties() above scans the WHOLE contract, so it also picks
+    # up later mentions of an entity ("...تلتزم مؤسسة الصيانة بالتدخل..."),
+    # signature blocks that glue both names on one line, and suffix-style
+    # names ("ALPHA INDUSTRIES LLC") it does not recognise. A contract
+    # names its parties once, in the opening paragraph -- so we first read
+    # ONLY that window, and fall back to the legacy scan only if the
+    # window does not yield two parties.
+    # (Limitation: bilateral contracts are assumed, so at most two
+    # parties are returned.)
+
+    _AR_ENTITY_KEYS = {
+        "شركة", "مؤسسة", "مكتب", "مصنع", "مجمع", "جمعية", "وكالة",
+        "مجموعة", "بنك", "مقاولة", "ورشة",
+    }
+    _AR_NAME_STOP_PREFIXES = (
+        "ويمثل", "يمثل", "ممثل", "ومقر", "مقر", "الكائن", "وعنوان",
+        "عنوان", "المسجل", "الواقع", "بصفت", "ويشار", "المشار",
+        "والتي", "والذي", "التي", "الذي", "المولود", "القاطن",
+        "الساكن", "الحامل", "وبين",
+    )
+    _LATIN_PREFIX_FORMS = {
+        "société", "societe", "entreprise", "établissement",
+        "etablissement", "ets", "sarl", "spa", "eurl", "snc",
+        "company", "corporation", "corp", "ltd", "limited", "inc",
+        "llc", "association", "groupe", "group",
+    }
+    _LATIN_SUFFIX_FORMS = {
+        "llc", "sarl", "spa", "eurl", "snc", "sa", "ltd", "inc",
+        "corp", "gmbh",
+    }
+    _LATIN_NAME_STOP = {
+        "between", "entre", "and", "et", "the", "le", "la", "les",
+        "with", "avec", "by", "par",
+    }
+    _PUNCT_END = ",;:.،؛"
+
+    def _core(tok):
+        return tok.strip(",;:.،؛()«»\"“”'")
+
+    def _form(tok):
+        return _core(tok).replace(".", "").lower()
+
+    def _is_name_token(c):
+        return bool(c) and (c[0].isupper() or c[0].isdigit() or c == "&")
+
+    def _preamble_window():
+        markers = [
+            r"بين\s", r"\bentre\b", r"\bbetween\b",
+        ]
+        start = None
+        for marker in markers:
+            m = re.search(marker, analysis_text, re.I)
+            if m and (start is None or m.start() < start):
+                start = m.start()
+        if start is None:
+            start = 0
+
+        limit = 1500
+        tail = analysis_text[start:start + limit]
+        end_m = re.search(
+            r"\barticle\s*(?:1|premier|one|i)\b|المادة\s*(?:الأولى|1|01)\b"
+            r"|\bsection\s*1\b",
+            tail,
+            re.I
+        )
+        if end_m and end_m.start() > 20:
+            tail = tail[:end_m.start()]
+        return tail
+
+    def _arabic_entities(tokens):
+        found = []
+        for i, (pos, tok) in enumerate(tokens):
+            core = _core(tok)
+            if core in _AR_ENTITY_KEYS:
+                key = core
+            elif core.startswith("و") and core[1:] in _AR_ENTITY_KEYS:
+                key = core[1:]
+            else:
+                continue
+
+            name = [key]
+            ended = tok[-1:] in _PUNCT_END
+            j = i + 1
+
+            while not ended and j < len(tokens) and len(name) < 7:
+                t = tokens[j][1]
+                c = _core(t)
+
+                if (
+                    not c
+                    or c in ("و", "بين")
+                    or any(c.startswith(p) for p in _AR_NAME_STOP_PREFIXES)
+                    or c in _AR_ENTITY_KEYS
+                    or (c.startswith("و") and c[1:] in _AR_ENTITY_KEYS)
+                ):
+                    break
+
+                name.append(c)
+                ended = t[-1:] in _PUNCT_END
+                j += 1
+
+            if len(name) >= 2:
+                found.append((pos, " ".join(name)))
+
+        return found
+
+    def _latin_entities(tokens):
+        found = []
+        n = len(tokens)
+
+        for i, (pos, tok) in enumerate(tokens):
+            form = _form(tok)
+
+            # (a) prefix style: "Société ALPHA INDUSTRIE", "Company Alpha"
+            if form in _LATIN_PREFIX_FORMS and _is_name_token(_core(tok)):
+                name = [_core(tok)]
+                ended = tok[-1:] in _PUNCT_END
+                j = i + 1
+
+                while not ended and j < n and len(name) < 7:
+                    t = tokens[j][1]
+                    c = _core(t)
+
+                    if not _is_name_token(c) or _form(t) in _LATIN_NAME_STOP:
+                        break
+
+                    name.append(c)
+                    ended = t[-1:] in _PUNCT_END
+                    j += 1
+
+                if len(name) >= 2:
+                    found.append((pos, " ".join(name)))
+
+            # (b) suffix style: "ALPHA INDUSTRIES LLC", "TECHNISERV SARL"
+            if form in _LATIN_SUFFIX_FORMS and _is_name_token(_core(tok)):
+                name = [_core(tok)]
+                j = i - 1
+
+                while j >= 0 and len(name) < 7:
+                    prev = tokens[j][1]
+                    c = _core(prev)
+
+                    if (
+                        not _is_name_token(c)
+                        or prev[-1:] in _PUNCT_END
+                        or _form(prev) in _LATIN_NAME_STOP
+                        or _form(prev) in _LATIN_SUFFIX_FORMS
+                    ):
+                        break
+
+                    name.insert(0, c)
+                    j -= 1
+
+                if len(name) >= 2:
+                    found.append((tokens[j + 1][0], " ".join(name)))
+
+        return found
+
+    _CIVILITY = {
+        "السيد", "السيدة", "الآنسة", "المسمى", "المدعو",
+        "monsieur", "madame", "mademoiselle", "m", "mme", "mlle",
+        "mr", "mrs", "ms", "mister", "madam",
+    }
+    _REPRESENTATION_MARKERS = (
+        "ويمثل", "يمثل", "ممثل", "représenté", "representé", "represented",
+        "بواسطة", "agissant", "acting", "المدير", "gérant", "manager",
+    )
+
+    def _person_entities(tokens):
+        """Natural persons ("السيد محمد ..."), skipping anyone introduced
+        as a REPRESENTATIVE of an entity ("ويمثلها السيد ...")."""
+        found = []
+
+        for i, (pos, tok) in enumerate(tokens):
+            if _form(tok) not in _CIVILITY:
+                continue
+
+            before = " ".join(t for _, t in tokens[max(0, i - 3):i]).lower()
+            if any(marker in before for marker in _REPRESENTATION_MARKERS):
+                continue
+
+            name = []
+            ended = False
+            j = i + 1
+            while not ended and j < len(tokens) and len(name) < 5:
+                t = tokens[j][1]
+                c = _core(t)
+                latin = bool(re.match(r"[A-Za-zÀ-ÿ]", c or " "))
+                if (
+                    not c
+                    or c in ("و", "et", "and", "بين")
+                    or any(c.startswith(p) for p in _AR_NAME_STOP_PREFIXES)
+                    or (latin and not _is_name_token(c))
+                ):
+                    break
+                name.append(c)
+                ended = t[-1:] in _PUNCT_END
+                j += 1
+
+            if len(name) >= 2:
+                found.append((pos, " ".join([_core(tok)] + name)))
+
+        return found
+
+    def _prune_parties(items):
+        uniq = []
+        seen = set()
+        for it in items:
+            clean = re.sub(r"\s+", " ", it).strip()
+            if clean and clean.lower() not in seen:
+                seen.add(clean.lower())
+                uniq.append(clean)
+
+        lows = [u.lower() for u in uniq]
+
+        # Drop concatenations: an entry that contains 2+ other entries
+        keep = []
+        for idx, u in enumerate(uniq):
+            inside = [
+                k for k in range(len(uniq))
+                if k != idx and lows[k] != lows[idx] and lows[k] in lows[idx]
+            ]
+            if len(inside) >= 2:
+                continue
+            keep.append(u)
+
+        # Drop shortened references contained in a longer entry
+        lows = [u.lower() for u in keep]
+        final = []
+        for idx, u in enumerate(keep):
+            if any(
+                k != idx and len(lows[k]) > len(lows[idx])
+                and lows[idx] in lows[k]
+                for k in range(len(keep))
+            ):
+                continue
+            final.append(u)
+
+        return final
+
+    def extract_parties_smart():
+        window = _preamble_window()
+        tokens = [(m.start(), m.group()) for m in re.finditer(r"\S+", window)]
+
+        found = _arabic_entities(tokens) + _latin_entities(tokens)
+
+        if len({n for _, n in found}) < 2:
+            found += _person_entities(tokens)
+
+        found.sort(key=lambda item: item[0])
+
+        names = _prune_parties([n for _, n in found])
+        names = [
+            n for n in names
+            if len(n) > 3 and not is_boilerplate_party(n)
+        ]
+
+        if len(names) >= 2:
+            return names[:2]
+
+        # Fallback: legacy whole-contract scan, merged and pruned
+        legacy = extract_parties()
+        return _prune_parties(names + legacy)[:2]
+
+    parties = extract_parties_smart()
 
     # Post-processing fix: some extraction patterns capture a whole
     # "X and Y" / "X et Y" / "X و Y" phrase as a single party instead of
@@ -575,11 +842,13 @@ def extract_all(text, report_lang=None):
         # 1. Amounts explicitly followed by a currency
         # -----------------------------------------------------
 
+        # Thousands separators: space, dot, COMMA ("500,000 DZD" used to
+        # be read as "000 DZD"), and non-breaking spaces.
         currency_pattern = (
-            r"(?<![\d])"
-            r"(\d{1,3}(?:[ .]\d{3})+|\d+)"
+            r"(?<![\d.,])"
+            r"(\d{1,3}(?:[ .,\u00a0\u202f]\d{3})+|\d+)"
             r"\s*"
-            r"(DA|DZD|EUR|USD|\$|€|دينار|دج)"
+            r"(DA|DZD|EUR|USD|\$|€|دينار(?:\s+جزائري)?|دج)"
         )
 
         for match in re.finditer(
@@ -751,32 +1020,35 @@ def extract_all(text, report_lang=None):
                 # Remove signature / closing section
                 # -------------------------------------------------
 
+                # A signature block is a line made of ROLE NAMES only
+                # ("Le Client      Le Prestataire", "The Client"). The old
+                # patterns matched any paragraph merely STARTING with
+                # "Le Client" / "The Client" -- so a payment paragraph such
+                # as "Le Client s'engage a regler ... 30 jours" was cut off
+                # as if it were a signature, and its deadline was lost.
+                role = (
+                    r"(?:Le\s+(?:Client|Prestataire|Vendeur|Bailleur|Locataire)"
+                    r"|L['’](?:Acheteur|Entrepreneur)"
+                    r"|The\s+(?:Client|Service\s+Provider|Provider|Seller|Buyer"
+                    r"|Lessor|Lessee|Contractor)"
+                    r"|الطرف\s+(?:الأول|الثاني))"
+                )
+
                 signature_patterns = [
 
                     r"\n\s*Fait\s+à\b",
                     r"\n\s*Fait\s+le\b",
-                    r"\n\s*Le\s+Client\b",
-                    r"\n\s*Le\s+Prestataire\b",
-                    r"\n\s*Le\s+Vendeur\b",
-                    r"\n\s*L['’]Acheteur\b",
-                    r"\n\s*Signature\b",
-                    r"\n\s*Signatures\b",
-
-                    r"\n\s*Done\s+at\b",
-                    r"\n\s*Signed\s+at\b",
-                    r"\n\s*The\s+Client\b",
-                    r"\n\s*The\s+Provider\b",
-                    r"\n\s*The\s+Seller\b",
-                    r"\n\s*The\s+Buyer\b",
-                    r"\n\s*Signature\b",
-                    r"\n\s*Signatures\b",
-
+                    r"\n\s*Done\s+(?:at|in)\b",
+                    r"\n\s*Signed\s+(?:at|in)\b",
+                    r"\n\s*Signatures?\b",
                     r"\n\s*حرر\s+ب\b",
                     r"\n\s*حرر\s+في\b",
                     r"\n\s*الإمضاء\b",
                     r"\n\s*التوقيع\b",
-                    r"\n\s*الطرف\s+الأول\b",
-                    r"\n\s*الطرف\s+الثاني\b"
+
+                    # role-only line: role followed by end of line or by
+                    # another role (two signatories on the same line)
+                    r"\n\s*" + role + r"\s*(?=\n|$|" + role + r")",
                 ]
 
                 for pattern in signature_patterns:
