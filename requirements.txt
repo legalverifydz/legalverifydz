@@ -4,3 +4,4 @@ python-docx
 bcrypt
 pytesseract
 Pillow
+openpyxl
