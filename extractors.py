@@ -769,6 +769,17 @@ def extract_all(text, report_lang=None):
 
         return final
 
+    _ROLE_ONLY = re.compile(
+        r"^(?:le|la|les|l['’]|the|ci-après|hereinafter)?\s*"
+        r"(?:client|prestataire|vendeur|acheteur|bailleur|locataire"
+        r"|fournisseur|seller|buyer|lessor|lessee|provider|service provider"
+        r"|contractor|supplier|customer"
+        r"|الطرف الأول|الطرف الثاني|العميل|المشتري|البائع|المؤجر|المستأجر)"
+        r"(?:\s+(?:d['’]une part|d['’]autre part|of the one part"
+        r"|of the other part|من جهة|من جهة أخرى))?\s*$",
+        re.I
+    )
+
     def extract_parties_smart():
         window = _preamble_window()
         tokens = [(m.start(), m.group()) for m in re.finditer(r"\S+", window)]
@@ -789,9 +800,12 @@ def extract_all(text, report_lang=None):
         if len(names) >= 2:
             return names[:2]
 
-        # Fallback: legacy whole-contract scan, merged and pruned
+        # Fallback: legacy whole-contract scan, merged and pruned. A bare
+        # role ("le Client d'une part") names nobody, so it is dropped --
+        # which lets the "parties not identified" finding fire.
         legacy = extract_parties()
-        return _prune_parties(names + legacy)[:2]
+        merged = _prune_parties(names + legacy)
+        return [n for n in merged if not _ROLE_ONLY.match(n)][:2]
 
     parties = extract_parties_smart()
 
@@ -944,7 +958,7 @@ def extract_all(text, report_lang=None):
             r"(سنة|عام|عام واحد|سنة واحدة|"
             r"سنتين|ثلاث سنوات|\d+\s*(?:سنة|سنوات|شهر|أشهر|يوم|أيام))",
 
-            r"\b(سنة|عام|سنتين|ثلاث سنوات)\b"
+            r"\b(سنة|عام|سنتين|ثلاث سنوات)\b(?!\s*(?:\d|الصنع|الإنتاج|الميلاد))"
         ]
 
         for pattern in patterns:
@@ -961,6 +975,26 @@ def extract_all(text, report_lang=None):
 
                 if value:
                     durations.append(value)
+
+        # A number repeated in parentheses -- "twelve (12) months",
+        # "trois (3) ans", "ثلاث (3) سنوات" -- after a duration cue word.
+        unit = (
+            r"(months?|years?|days?|mois|ans?|ann[ée]es?|jours?"
+            r"|سنوات|سنة|أشهر|شهرا|شهر|أيام|يومًا|يوما|يوم)"
+        )
+        cue = (
+            r"(?:لمدة|مدة|duration|term|period|durée|pendant|pour|for)"
+            r"(?:\s+\S+){0,3}?"
+        )
+
+        for match in re.finditer(
+            cue + r"\s*\(\s*(\d+)\s*\)\s*" + unit,
+            analysis_text,
+            re.I
+        ):
+            durations.append(
+                "{} {}".format(match.group(1), match.group(2))
+            )
 
         return unique_keep_order(durations)
 

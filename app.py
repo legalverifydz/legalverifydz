@@ -6,10 +6,12 @@ import hashlib
 import base64
 import io as _io
 import html as _html
+import copy as _copy
 import extractors
 import rules
 import scoring
 import ocr
+import criminal
 from datetime import datetime
 from pathlib import Path
 # openpyxl is used only for the admin "export accounts to Excel"
@@ -478,6 +480,14 @@ T = {
         "feature2_title": "✍️ AI Contract Generation",
         "feature2_desc": "Generate professional legal agreements using simplified intelligent forms.",
         "footer_text": "LegalVerifyDZ © 2026 — AI-powered legal technology for contract analysis",
+        "upload_title": "📄 Upload a contract",
+        "upload_label": "PDF / Word / scanned image (JPG, PNG)",
+        "upload_hint": "Scanned contracts are supported too (PDFs from a scanner or phone photos) through OCR text recognition.",
+        "paste_label": "Or paste the contract text",
+        "paste_placeholder": "Paste the contract text here...",
+        "file_loaded": "File loaded successfully.",
+        "preview_text": "Preview of the extracted text",
+        "need_input": "Please upload a file or paste the contract text.",
     },
     "Français": {
         "dashboard": "Dashboard",
@@ -502,6 +512,14 @@ T = {
         "feature2_title": "✍️ Génération de contrats par IA",
         "feature2_desc": "Générez des accords juridiques professionnels à l'aide de formulaires intelligents simplifiés.",
         "footer_text": "LegalVerifyDZ © 2026 — Technologie juridique d'analyse de contrats propulsée par l'IA",
+        "upload_title": "📄 Téléverser un contrat",
+        "upload_label": "PDF / Word / image scannée (JPG, PNG)",
+        "upload_hint": "Les contrats scannés sont aussi pris en charge (PDF issus d'un scanner ou photos prises au téléphone) grâce à la reconnaissance de texte OCR.",
+        "paste_label": "Ou collez le texte du contrat",
+        "paste_placeholder": "Collez le texte du contrat ici...",
+        "file_loaded": "Fichier chargé avec succès.",
+        "preview_text": "Aperçu du texte extrait",
+        "need_input": "Veuillez téléverser un fichier ou coller le texte du contrat.",
     },
     "العربية": {
         "dashboard": "لوحة التحكم",
@@ -526,6 +544,14 @@ T = {
         "feature2_title": "✍️ توليد العقود بالذكاء الاصطناعي",
         "feature2_desc": "أنشئ اتفاقيات قانونية احترافية باستخدام نماذج ذكية مبسَّطة.",
         "footer_text": "LegalVerifyDZ © 2026 — تقنية قانونية لتحليل العقود مدعومة بالذكاء الاصطناعي",
+        "upload_title": "📄 ارفع العقد",
+        "upload_label": "PDF / Word / صورة ممسوحة ضوئيًا (JPG, PNG)",
+        "upload_hint": "العقود الممسوحة ضوئيًا مدعومة أيضًا (ملفات PDF من ماسح ضوئي أو صور من الهاتف) عبر التعرف الضوئي على الحروف (OCR).",
+        "paste_label": "أو الصق نص العقد",
+        "paste_placeholder": "الصق نص العقد هنا...",
+        "file_loaded": "تم تحميل الملف بنجاح.",
+        "preview_text": "معاينة النص المستخرج",
+        "need_input": "يرجى رفع ملف أو لصق نص العقد.",
     },
 }
 
@@ -1361,6 +1387,267 @@ for _lang_key, _table in LEGAL_BASIS.items():
         _tpl["recommendation"] = _tpl["recommendation"] + " " + _rec_sfx
 
 
+# ==========================================
+# TYPE-SPECIFIC CIVIL ARTICLES (sale / lease)
+# ==========================================
+# LEGAL_BASIS above is general (it fits any contract). For the two other
+# contract types the engine recognises, these extra provisions are APPENDED
+# to the matching findings. Articles checked against Algerian university
+# course materials:
+#   Sale  (Code civil art. 351-412): 351 definition, 371 warranty against
+#         eviction/interference, 379-386 hidden defects, 388 price due at
+#         delivery (+ right to withhold it if eviction is feared), 387/2 and
+#         282 place of payment.
+#   Lease (art. 467-537, as amended by Law 07-05 of 13/05/2007): 467 definition
+#         (fixed duration and known rent are elements), 467 bis written
+#         contract with a certain date, 476 inspection report at delivery,
+#         488 lessor's warranty for hidden defects; CPCA art. 40 (disputes on
+#         real-estate leases: court where the property is located).
+
+_SALE = "Sale / Purchase Contract"
+_LEASE = "Lease / Rental Contract"
+
+TYPE_LEGAL = {
+    _SALE: {
+        "العربية": {
+            "PAYMENT": (
+                "⚖️ خاص بالبيع: المادة 388 من القانون المدني (الثمن مستحق وقت تسليم المبيع ما لم يوجد اتفاق أو عرف بخلاف ذلك)، والمادة 387 فقرة 2 مع المادة 282 (مكان الوفاء بالثمن).",
+                "⚖️ في البيع: يُنصح بالنص صراحةً على أجل ومكان الوفاء بالثمن، لأن المادة 388 تجعله مستحقًا عند التسليم ما لم يُتفق على خلاف ذلك، وللمشتري حبس الثمن إذا خيف نزع المبيع من يده (المادة 388 فقرة 2).",
+            ),
+            "LIABILITY": (
+                "⚖️ خاص بالبيع: المادة 371 من القانون المدني (ضمان التعرض والاستحقاق)، والمواد 379 إلى 386 (ضمان العيوب الخفية: عيب مؤثر قديم خفي لا يعلمه المشتري).",
+                "⚖️ في البيع: يُنصح بتحديد التزامات البائع بالضمان (التعرض والاستحقاق والعيوب الخفية) ومدته، مع مراعاة أن نقل الملكية هو الالتزام الأساسي للبائع (المادة 351).",
+            ),
+        },
+        "Français": {
+            "PAYMENT": (
+                "⚖️ Spécifique à la vente : art. 388 du Code civil (le prix est exigible au moment de la livraison, sauf convention ou usage contraire) et art. 387 al. 2 avec art. 282 (lieu du paiement du prix).",
+                "⚖️ En matière de vente : stipulez expressément le délai et le lieu de paiement du prix, car l'art. 388 le rend exigible à la livraison sauf convention contraire ; l'acheteur peut retenir le prix s'il craint l'éviction (art. 388 al. 2).",
+            ),
+            "LIABILITY": (
+                "⚖️ Spécifique à la vente : art. 371 du Code civil (garantie contre le trouble et l'éviction) et art. 379 à 386 (garantie des vices cachés : vice influent, ancien, caché et ignoré de l'acheteur).",
+                "⚖️ En matière de vente : définissez les garanties du vendeur (trouble, éviction, vices cachés) et leur durée, sachant que le transfert de propriété est l'obligation principale du vendeur (art. 351).",
+            ),
+        },
+        "English": {
+            "PAYMENT": (
+                "⚖️ Specific to sales: Art. 388 of the Civil Code (the price falls due at delivery unless agreed or customary otherwise) and Art. 387 para. 2 with Art. 282 (place of payment of the price).",
+                "⚖️ For a sale: state the payment deadline and place expressly, because Art. 388 makes the price due at delivery unless agreed otherwise; the buyer may withhold the price if eviction is feared (Art. 388 para. 2).",
+            ),
+            "LIABILITY": (
+                "⚖️ Specific to sales: Art. 371 of the Civil Code (warranty against interference and eviction) and Arts. 379 to 386 (hidden-defects warranty: a defect that is material, pre-existing, hidden and unknown to the buyer).",
+                "⚖️ For a sale: define the seller's warranties (interference, eviction, hidden defects) and their duration, bearing in mind that transferring ownership is the seller's main obligation (Art. 351).",
+            ),
+        },
+    },
+    _LEASE: {
+        "العربية": {
+            "TERMINATION": (
+                "⚖️ خاص بالإيجار: المادة 467 من القانون المدني (المدة المحددة ركن في عقد الإيجار بعد تعديل 2007)، والمادة 467 مكرر (كتابة العقد وثبوت تاريخه).",
+                "⚖️ في الإيجار: يُنصح بتحديد مدة الإيجار وتاريخي بدايته ونهايته بدقة، وبكتابة العقد وتثبيت تاريخه؛ علمًا أن المادة 509 المتعلقة بالتجديد الضمني ألغيت بالقانون 07-05.",
+            ),
+            "PAYMENT": (
+                "⚖️ خاص بالإيجار: المادة 467 من القانون المدني (بدل الإيجار المعلوم ركن في العقد، نقدًا أو بتقديم عمل).",
+                "⚖️ في الإيجار: يُنصح بتحديد مقدار بدل الإيجار ودورية دفعه وموعده ووسيلته بدقة، لأنه ركن في العقد (المادة 467).",
+            ),
+            "LIABILITY": (
+                "⚖️ خاص بالإيجار: المادة 476 من القانون المدني (تسليم العين المؤجرة بمحضر معاينة أو بيان وصفي)، والمادة 488 (ضمان المؤجر للعيوب الخفية).",
+                "⚖️ في الإيجار: يُنصح بإرفاق محضر معاينة أو بيان وصفي بحالة العين عند التسليم (المادة 476)، وبيان التزامات المؤجر في الضمان (المادة 488).",
+            ),
+            "DISPUTE": (
+                "⚖️ خاص بإيجار العقارات: المادة 40 من قانون الإجراءات المدنية والإدارية (الاختصاص الإقليمي لمحكمة موقع العقار).",
+                "⚖️ ينعقد الاختصاص في دعاوى إيجار العقارات للمحكمة التي يقع العقار في دائرة اختصاصها (المادة 40 من قانون الإجراءات المدنية والإدارية).",
+            ),
+        },
+        "Français": {
+            "TERMINATION": (
+                "⚖️ Spécifique au bail : art. 467 du Code civil (la durée déterminée est un élément du bail depuis la réforme de 2007) et art. 467 bis (contrat écrit ayant date certaine).",
+                "⚖️ En matière de bail : fixez précisément la durée et les dates de début et de fin, rédigez le contrat par écrit et faites établir sa date certaine ; l'art. 509 sur la tacite reconduction a été abrogé par la loi 07-05.",
+            ),
+            "PAYMENT": (
+                "⚖️ Spécifique au bail : art. 467 du Code civil (le loyer connu est un élément du contrat, en argent ou par une prestation).",
+                "⚖️ En matière de bail : précisez le montant du loyer, sa périodicité, son échéance et son mode de paiement, car il s'agit d'un élément du contrat (art. 467).",
+            ),
+            "LIABILITY": (
+                "⚖️ Spécifique au bail : art. 476 du Code civil (remise du bien loué avec procès-verbal de constat ou état descriptif) et art. 488 (garantie du bailleur pour les vices cachés).",
+                "⚖️ En matière de bail : joignez un procès-verbal de constat ou un état descriptif du bien à la remise (art. 476) et précisez les garanties du bailleur (art. 488).",
+            ),
+            "DISPUTE": (
+                "⚖️ Spécifique au bail d'immeubles : art. 40 du Code de procédure civile et administrative (compétence territoriale du tribunal du lieu de situation de l'immeuble).",
+                "⚖️ Pour les litiges relatifs au bail d'immeubles, le tribunal compétent est celui dans le ressort duquel se trouve l'immeuble (art. 40 du Code de procédure civile et administrative).",
+            ),
+        },
+        "English": {
+            "TERMINATION": (
+                "⚖️ Specific to leases: Art. 467 of the Civil Code (a fixed duration is an element of the lease since the 2007 reform) and Art. 467 bis (written contract with a certain date).",
+                "⚖️ For a lease: fix the duration and the start and end dates precisely, put the contract in writing and give it a certain date; Art. 509 on tacit renewal was repealed by Law 07-05.",
+            ),
+            "PAYMENT": (
+                "⚖️ Specific to leases: Art. 467 of the Civil Code (a known rent is an element of the contract, in money or by performing work).",
+                "⚖️ For a lease: state the rent amount, frequency, due date and payment method precisely, since rent is an element of the contract (Art. 467).",
+            ),
+            "LIABILITY": (
+                "⚖️ Specific to leases: Art. 476 of the Civil Code (delivery of the leased property with an inspection report or descriptive statement) and Art. 488 (lessor's warranty for hidden defects).",
+                "⚖️ For a lease: attach an inspection report or descriptive statement of the property at delivery (Art. 476) and state the lessor's warranty obligations (Art. 488).",
+            ),
+            "DISPUTE": (
+                "⚖️ Specific to real-estate leases: Art. 40 of the Code of Civil and Administrative Procedure (territorial jurisdiction of the court where the property is located).",
+                "⚖️ Disputes on real-estate leases fall under the court in whose district the property is located (Art. 40 of the Code of Civil and Administrative Procedure).",
+            ),
+        },
+    },
+}
+
+_TYPE_GROUPS = {
+    "TERMINATION": ("TERMINATION_HIGH", "TERMINATION_MISSING"),
+    "PAYMENT": ("PAYMENT_MISSING", "PAYMENT_VAGUE"),
+    "LIABILITY": ("LIABILITY_MISSING",),
+    "DISPUTE": ("DISPUTE_MISSING",),
+}
+
+
+def findings_templates(report_lang, contract_type):
+    """The localized finding templates for this report language, with the
+    contract-type-specific articles (sale / lease) appended when they
+    apply. Returns the shared template dict unchanged for other types."""
+
+    base = _tr(report_lang)["findings"]
+    lang_key = report_lang if report_lang in TR else "English"
+    extra = TYPE_LEGAL.get(contract_type, {}).get(lang_key)
+
+    if not extra:
+        return base
+
+    templates = _copy.deepcopy(base)
+    for group, (issue_extra, rec_extra) in extra.items():
+        for key in _TYPE_GROUPS[group]:
+            templates[key]["issue"] += " " + issue_extra
+            templates[key]["recommendation"] += " " + rec_extra
+
+    return templates
+
+
+# ==========================================
+# CRIMINAL-LAW ALERTS
+# ==========================================
+# criminal.py decides WHEN an alert applies; this table holds the wording
+# and the articles. Penal Code (Ordonnance 66-156, as amended) art. 372
+# (escroquerie), 376 (abus de confiance), 374-375 (cheque without funds,
+# which replaced the repealed Commercial Code art. 538-539); Code of
+# Criminal Procedure art. 72 (complaint with civil-party claim before the
+# investigating judge) and 337 bis (direct summons: for the offences the
+# law lists, otherwise with the public prosecutor's authorisation).
+# Penalties are deliberately not quoted: the amounts change by amendment.
+
+CRIMINAL_UI = {
+    "العربية": {
+        "title": "⚖️ البُعد الجزائري المحتمل",
+        "intro": "تنبيهات استُخلصت من صياغة العقد: قد يتجاوز الإخلال في هذه الحالات حدود المسؤولية المدنية إلى المسؤولية الجزائية إذا توافرت أركان الجريمة. هي تنبيهات احتمالية وليست توصيفًا لوقائع.",
+        "trigger": "المقطع الذي أثار التنبيه",
+        "articles": "المواد المحتملة",
+    },
+    "Français": {
+        "title": "⚖️ Dimension pénale potentielle",
+        "intro": "Alertes tirées de la rédaction du contrat : dans ces cas, un manquement peut dépasser la responsabilité civile et engager la responsabilité pénale si les éléments constitutifs de l'infraction sont réunis. Ce sont des alertes potentielles, non une qualification de faits.",
+        "trigger": "Passage ayant déclenché l'alerte",
+        "articles": "Textes potentiellement applicables",
+    },
+    "English": {
+        "title": "⚖️ Potential criminal-law dimension",
+        "intro": "Alerts drawn from how the contract is drafted: in these cases a breach may go beyond civil liability and engage criminal liability if the elements of the offence are met. They are potential alerts, not a legal characterisation of facts.",
+        "trigger": "Passage that triggered the alert",
+        "articles": "Potentially applicable provisions",
+    },
+}
+
+CRIMINAL_BASIS = {
+    "العربية": {
+        "ENTRUSTED_PROPERTY": {
+            "title": "خيانة الأمانة",
+            "note": "يتضمن العقد ما يوحي بتسليم أموال أو معدات أو وثائق إلى أحد الطرفين لأداء عمل أو لحفظها أو استعمالها. في هذه الحالة قد يتجاوز التصرف في المال المُسلَّم أو تبديده بسوء نية حدود المسؤولية المدنية إلى المسؤولية الجزائية.",
+            "articles": "المادة 376 من قانون العقوبات (جنحة خيانة الأمانة: اختلاس أو تبديد بسوء نية مالًا سُلِّم على سبيل الوديعة أو الوكالة أو الرهن أو عارية الاستعمال أو الإجارة أو لأداء عمل بأجر أو بغير أجر، إضرارًا بالمالك أو الحائز).",
+            "recommendation": "حرّروا محضر تسليم واستلام موقّعًا يصف المعدات والوثائق وحالتها، وحدّدوا في العقد شروط استعمالها وأجل ردّها وجزاء الإخلال. وعند وقوع اختلاس يمكن تقديم شكوى لوكيل الجمهورية، أو شكوى مصحوبة بادعاء مدني أمام قاضي التحقيق (المادة 72 من قانون الإجراءات الجزائية)، أو التكليف المباشر بالحضور (المادة 337 مكرر) في الحالات التي يجيزها القانون أو بترخيص من النيابة العامة.",
+            "caveat": "تنبيه احتمالي: لا تقوم الجريمة إلا بتوافر أركانها (تسليم على سبيل الأمانة، اختلاس أو تبديد، سوء نية، ضرر).",
+        },
+        "ADVANCE_PAYMENT": {
+            "title": "الدفعة المقدمة (مخاطر النصب)",
+            "note": "ينص العقد على دفعة مقدمة أو عربون أو تسبيق قبل تنفيذ الطرف الآخر لالتزامه، دون ضمان ظاهر. عدم التنفيذ وحده مسألة مدنية في الأصل، لكن إن استُعمل اسم كاذب أو صفة كاذبة أو طرق احتيالية لإقناعك بتسليم المال فقد تقوم جريمة النصب.",
+            "articles": "المادة 372 من قانون العقوبات (جنحة النصب: الاستيلاء على مال الغير باستعمال اسم كاذب أو صفة كاذبة أو طرق احتيالية).",
+            "recommendation": "اشترطوا ضمانًا بنكيًا أو كفالة للدفعة المقدمة، أو قسّموها حسب مراحل الإنجاز، وتحققوا من هوية الطرف الآخر وصفته وسجله التجاري قبل الدفع، واحتفظوا بإثبات كل دفعة. وعند الاشتباه في احتيال: شكوى مصحوبة بادعاء مدني أمام قاضي التحقيق (المادة 72 من قانون الإجراءات الجزائية)، أو تكليف مباشر بالحضور بترخيص من النيابة العامة (المادة 337 مكرر).",
+            "caveat": "تنبيه احتمالي: الدفعة المقدمة ليست جريمة بحد ذاتها، والنصب يتطلب وسائل احتيالية وقصدًا جنائيًا.",
+        },
+        "CHEQUE_PAYMENT": {
+            "title": "الدفع بشيك",
+            "note": "ينص العقد على الدفع بشيك. إصدار شيك دون رصيد كافٍ قابل للصرف يشكل جنحة يعاقب عليها قانون العقوبات.",
+            "articles": "المادتان 374 و375 من قانون العقوبات (جنحة إصدار شيك بدون رصيد؛ وقد حلّت الإحالة إليهما محل المادتين 538 و539 من القانون التجاري).",
+            "recommendation": "حدّدوا في العقد البنك المسحوب عليه وتاريخ استحقاق الشيك، وتحققوا من وجود الرصيد قبل التسليم، واحتفظوا بنسخة من الشيك. وفي حالة رفض الدفع لعدم كفاية الرصيد تُتّبع أولًا إجراءات التسوية لدى البنك (إنذار الساحب بتسوية وضعيته)، ثم يمكن تقديم شكوى مصحوبة بادعاء مدني (المادة 72 من قانون الإجراءات الجزائية).",
+            "caveat": "تنبيه احتمالي: قيام الجريمة يتوقف على انعدام الرصيد أو عدم كفايته وسوء نية الساحب، وعلى الإجراءات التي تسبق تحريك الدعوى.",
+        },
+    },
+    "Français": {
+        "ENTRUSTED_PROPERTY": {
+            "title": "Abus de confiance",
+            "note": "Le contrat suggère la remise de fonds, d'équipements ou de documents à l'une des parties pour exécuter un travail, les conserver ou les utiliser. Dans ce cas, le détournement ou la dissipation de mauvaise foi du bien remis peut dépasser la responsabilité civile et engager la responsabilité pénale.",
+            "articles": "Art. 376 du Code pénal (délit d'abus de confiance : détournement ou dissipation de mauvaise foi d'un bien remis à titre de dépôt, mandat, gage, prêt à usage, bail ou pour un travail rémunéré ou non, au préjudice du propriétaire ou du détenteur).",
+            "recommendation": "Établissez un procès-verbal de remise signé décrivant les équipements et documents et leur état, et précisez dans le contrat les conditions d'usage, le délai de restitution et la sanction du manquement. En cas de détournement : plainte auprès du procureur de la République, plainte avec constitution de partie civile devant le juge d'instruction (art. 72 du Code de procédure pénale) ou citation directe (art. 337 bis) dans les cas prévus par la loi ou avec l'autorisation du parquet.",
+            "caveat": "Alerte potentielle : l'infraction n'existe que si ses éléments sont réunis (remise à titre précaire, détournement ou dissipation, mauvaise foi, préjudice).",
+        },
+        "ADVANCE_PAYMENT": {
+            "title": "Paiement d'avance (risque d'escroquerie)",
+            "note": "Le contrat prévoit une avance, un acompte ou des arrhes avant l'exécution de l'obligation de l'autre partie, sans garantie apparente. La simple inexécution reste en principe civile, mais si un faux nom, une fausse qualité ou des manœuvres frauduleuses ont servi à obtenir la remise des fonds, une escroquerie peut être constituée.",
+            "articles": "Art. 372 du Code pénal (délit d'escroquerie : appropriation du bien d'autrui par l'usage d'un faux nom, d'une fausse qualité ou de manœuvres frauduleuses).",
+            "recommendation": "Exigez une garantie bancaire ou une caution pour l'avance, ou échelonnez-la selon l'avancement des travaux ; vérifiez l'identité, la qualité et le registre du commerce de l'autre partie avant de payer et conservez la preuve de chaque versement. En cas de soupçon de fraude : plainte avec constitution de partie civile devant le juge d'instruction (art. 72 du Code de procédure pénale) ou citation directe avec l'autorisation du parquet (art. 337 bis).",
+            "caveat": "Alerte potentielle : une avance n'est pas une infraction en soi ; l'escroquerie exige des manœuvres frauduleuses et une intention coupable.",
+        },
+        "CHEQUE_PAYMENT": {
+            "title": "Paiement par chèque",
+            "note": "Le contrat prévoit un paiement par chèque. L'émission d'un chèque sans provision suffisante et disponible constitue un délit puni par le Code pénal.",
+            "articles": "Art. 374 et 375 du Code pénal (délit d'émission de chèque sans provision ; le renvoi à ces articles a remplacé les art. 538 et 539 du Code de commerce).",
+            "recommendation": "Indiquez dans le contrat la banque tirée et la date d'échéance du chèque, vérifiez la provision avant la remise et conservez une copie. En cas de rejet pour défaut de provision, la procédure de régularisation auprès de la banque (injonction au tireur de régulariser sa situation) précède les poursuites ; une plainte avec constitution de partie civile reste ensuite possible (art. 72 du Code de procédure pénale).",
+            "caveat": "Alerte potentielle : l'infraction suppose l'absence ou l'insuffisance de provision, la mauvaise foi du tireur et le respect des étapes préalables aux poursuites.",
+        },
+    },
+    "English": {
+        "ENTRUSTED_PROPERTY": {
+            "title": "Breach of trust",
+            "note": "The contract suggests that funds, equipment or documents are handed to one party to perform work, keep them or use them. In that case, misappropriating or dissipating the property in bad faith can go beyond civil liability and engage criminal liability.",
+            "articles": "Art. 376 of the Penal Code (breach of trust: bad-faith misappropriation or dissipation of property handed over as a deposit, mandate, pledge, loan for use, lease, or to perform paid or unpaid work, to the prejudice of the owner or holder).",
+            "recommendation": "Draw up a signed handover record describing the equipment and documents and their condition, and set out in the contract the conditions of use, the return deadline and the consequence of breach. If misappropriation occurs: complaint to the public prosecutor, complaint with a civil-party claim before the investigating judge (Art. 72 of the Code of Criminal Procedure), or direct summons (Art. 337 bis) in the cases the law allows or with the prosecutor's authorisation.",
+            "caveat": "Potential alert: the offence exists only if its elements are met (hand-over on a precarious basis, misappropriation or dissipation, bad faith, prejudice).",
+        },
+        "ADVANCE_PAYMENT": {
+            "title": "Advance payment (fraud risk)",
+            "note": "The contract provides for an advance, down payment or deposit before the other party performs, with no visible guarantee. Mere non-performance is in principle a civil matter, but if a false name, false capacity or fraudulent manoeuvres were used to obtain the funds, fraud may be established.",
+            "articles": "Art. 372 of the Penal Code (fraud: obtaining another's property by using a false name, a false capacity or fraudulent manoeuvres).",
+            "recommendation": "Require a bank guarantee or surety for the advance, or stage it against progress; verify the other party's identity, capacity and commercial registration before paying, and keep proof of every payment. If fraud is suspected: complaint with a civil-party claim before the investigating judge (Art. 72 of the Code of Criminal Procedure) or direct summons with the prosecutor's authorisation (Art. 337 bis).",
+            "caveat": "Potential alert: an advance payment is not an offence in itself; fraud requires fraudulent means and criminal intent.",
+        },
+        "CHEQUE_PAYMENT": {
+            "title": "Payment by cheque",
+            "note": "The contract provides for payment by cheque. Issuing a cheque without sufficient available funds is an offence under the Penal Code.",
+            "articles": "Arts. 374 and 375 of the Penal Code (issuing a cheque without funds; the reference to these articles replaced Arts. 538 and 539 of the Commercial Code).",
+            "recommendation": "State the drawee bank and the cheque's due date in the contract, check that funds exist before handing it over and keep a copy. If a cheque is rejected for insufficient funds, the bank's regularisation procedure (a formal notice to the drawer to regularise) comes before prosecution; a complaint with a civil-party claim is possible afterwards (Art. 72 of the Code of Criminal Procedure).",
+            "caveat": "Potential alert: the offence requires missing or insufficient funds, the drawer's bad faith, and compliance with the steps that precede prosecution.",
+        },
+    },
+}
+
+
+def build_criminal_notes(text, contract_type, report_lang):
+    """Localized criminal-law alerts for this contract (possibly none)."""
+    lang_key = report_lang if report_lang in CRIMINAL_BASIS else "English"
+    table = CRIMINAL_BASIS[lang_key]
+
+    notes = []
+    for code, excerpt in criminal.detect(text, contract_type):
+        note = dict(table[code])
+        note["code"] = code
+        note["trigger"] = excerpt
+        notes.append(note)
+
+    return notes
+
+
 
 
 # ==========================================
@@ -1596,7 +1883,7 @@ def get_pending_lawyer_requests(limit=100):
     return [dict(row) for row in rows]
 
 
-def save_analysis(user_id, filename, result, findings):
+def save_analysis(user_id, filename, result, findings, criminal_notes=None):
     """
     Store one completed analysis for a registered user so it shows up
     in their History page later. `report_json` keeps the full result +
@@ -1611,7 +1898,11 @@ def save_analysis(user_id, filename, result, findings):
     score = compliance_score(data["risk"], data["confidence"], counts)
 
     payload = _json.dumps(
-        {"result": list(result), "findings": normalize_findings(findings)},
+        {
+            "result": list(result),
+            "findings": normalize_findings(findings),
+            "criminal": list(criminal_notes or []),
+        },
         ensure_ascii=False
     )
 
@@ -2106,33 +2397,241 @@ Guest access:
 # ==========================================
 # FILE EXTRACTION
 # ==========================================
-def extract_pdf(f):
-    text = ""
+# ==========================================
+# OCR: user-facing messages (AR / FR / EN)
+# ==========================================
+OCR_UI = {
+    "العربية": {
+        "errors": {
+            "deps_missing": "حزم بايثون الخاصة بالمسح الضوئي غير مثبّتة (pytesseract وPillow). نفّذ: pip install pytesseract Pillow ثم أعد تشغيل التطبيق.",
+            "tesseract_missing": "برنامج Tesseract غير موجود على هذا الجهاز/الخادم. ثبّته ثم تأكد أنه ضمن PATH أو حدّد مساره في TESSERACT_CMD داخل ocr.py. على Streamlit Cloud أضف tesseract-ocr إلى packages.txt ثم اضغط Reboot app.",
+            "tesseract_blocked": "ويندوز يمنع تشغيل Tesseract (الخطأ 740: يتطلب صلاحيات المسؤول). افتح خصائص tesseract.exe ← التوافق وألغِ «تشغيل هذا البرنامج كمسؤول»، أو أعد تثبيته خارج Program Files (مثل C:\\Tesseract-OCR).",
+            "no_languages": "لا توجد أي حزمة لغة مثبّتة في Tesseract. أعد تثبيته مع تفعيل العربية والفرنسية.",
+            "open_failed": "تعذّر فتح الملف (قد يكون تالفًا أو بصيغة غير مدعومة).",
+            "no_pages": "لا يحتوي الملف على صفحات.",
+            "no_text": "اشتغل المسح الضوئي لكنه لم يتعرّف على أي نص. قد تكون جودة المسح ضعيفة أو الصورة مظلمة/مقلوبة؛ جرّب صورة أوضح.",
+            "unexpected": "حدث خطأ غير متوقع أثناء المسح الضوئي. افتح «فحص المسح الضوئي» أدناه وأرسل لي محتواه.",
+        },
+        "warnings": {
+            "ara_missing": "⚠️ حزمة اللغة العربية غير مثبّتة في Tesseract: لن يُقرأ النص العربي بشكل صحيح (قد تظهر رموز لاتينية عشوائية).",
+            "fra_missing": "⚠️ حزمة اللغة الفرنسية غير مثبّتة في Tesseract: قد تتأثر دقة قراءة الحروف المشكَّلة (é, è, à).",
+            "low_quality": "⚠️ جودة النص المستخرج منخفضة؛ راجع المعاينة أدناه قبل التحليل.",
+            "truncated": "ℹ️ تمت معالجة أول {n} صفحة فقط بالمسح الضوئي.",
+            "scanned_unavailable": "⚠️ يبدو أن الملف ممسوح ضوئيًا لكن المسح الضوئي غير متاح، فقد يكون التحليل ناقصًا. السبب: {reason}",
+        },
+        "diag_title": "🔧 فحص خاصية المسح الضوئي (OCR)",
+        "diag_pkgs": "حزم بايثون (pytesseract وPillow)",
+        "diag_render": "عرض صفحات PDF كصور",
+        "diag_program": "برنامج Tesseract",
+        "diag_lang": "حزمة اللغة",
+        "diag_ready": "✅ المسح الضوئي جاهز للعمل.",
+        "diag_not_ready": "❌ المسح الضوئي غير جاهز: راجع السطور الحمراء أعلاه.",
+        "diag_no_arabic": "⚠️ المسح يعمل لكن بدون العربية. على ويندوز أعد تثبيت Tesseract مع تفعيل Arabic وFrench؛ وعلى Streamlit Cloud أضف tesseract-ocr-ara وtesseract-ocr-fra إلى packages.txt.",
+        "diag_refresh": "🔄 إعادة الفحص",
+    },
+    "Français": {
+        "errors": {
+            "deps_missing": "Les paquets Python de l'OCR ne sont pas installés (pytesseract et Pillow). Exécutez : pip install pytesseract Pillow puis relancez l'application.",
+            "tesseract_missing": "Le programme Tesseract est introuvable sur cette machine/ce serveur. Installez-le et vérifiez qu'il est dans le PATH, ou indiquez son chemin dans TESSERACT_CMD (ocr.py). Sur Streamlit Cloud, ajoutez tesseract-ocr à packages.txt puis faites Reboot app.",
+            "tesseract_blocked": "Windows bloque l'exécution de Tesseract (erreur 740 : droits administrateur requis). Ouvrez les propriétés de tesseract.exe > Compatibilité et décochez « Exécuter ce programme en tant qu'administrateur », ou réinstallez-le hors de Program Files (ex. C:\\Tesseract-OCR).",
+            "no_languages": "Aucun pack de langue n'est installé dans Tesseract. Réinstallez-le en activant l'arabe et le français.",
+            "open_failed": "Impossible d'ouvrir le fichier (corrompu ou format non pris en charge).",
+            "no_pages": "Le fichier ne contient aucune page.",
+            "no_text": "L'OCR a fonctionné mais n'a reconnu aucun texte. La qualité du scan est peut-être trop faible, ou l'image est sombre/retournée ; essayez une image plus nette.",
+            "unexpected": "Erreur inattendue pendant l'OCR. Ouvrez « Diagnostic de l'OCR » ci-dessous et envoyez-moi son contenu.",
+        },
+        "warnings": {
+            "ara_missing": "⚠️ Le pack de langue arabe n'est pas installé dans Tesseract : le texte arabe ne sera pas lu correctement (des caractères latins aléatoires peuvent apparaître).",
+            "fra_missing": "⚠️ Le pack de langue française n'est pas installé dans Tesseract : la lecture des lettres accentuées (é, è, à) peut être moins précise.",
+            "low_quality": "⚠️ La qualité du texte extrait est faible ; vérifiez l'aperçu ci-dessous avant l'analyse.",
+            "truncated": "ℹ️ Seules les {n} premières pages ont été traitées par l'OCR.",
+            "scanned_unavailable": "⚠️ Le fichier semble scanné mais l'OCR est indisponible, l'analyse peut donc être incomplète. Cause : {reason}",
+        },
+        "diag_title": "🔧 Diagnostic de l'OCR",
+        "diag_pkgs": "Paquets Python (pytesseract et Pillow)",
+        "diag_render": "Rendu des pages PDF en images",
+        "diag_program": "Programme Tesseract",
+        "diag_lang": "Pack de langue",
+        "diag_ready": "✅ L'OCR est prêt.",
+        "diag_not_ready": "❌ L'OCR n'est pas prêt : voyez les lignes rouges ci-dessus.",
+        "diag_no_arabic": "⚠️ L'OCR fonctionne mais sans l'arabe. Sous Windows, réinstallez Tesseract en cochant Arabic et French ; sur Streamlit Cloud, ajoutez tesseract-ocr-ara et tesseract-ocr-fra à packages.txt.",
+        "diag_refresh": "🔄 Relancer le diagnostic",
+    },
+    "English": {
+        "errors": {
+            "deps_missing": "The Python OCR packages are not installed (pytesseract and Pillow). Run: pip install pytesseract Pillow, then restart the app.",
+            "tesseract_missing": "The Tesseract program was not found on this machine/server. Install it and make sure it is on PATH, or set its path in TESSERACT_CMD (ocr.py). On Streamlit Cloud, add tesseract-ocr to packages.txt and press Reboot app.",
+            "tesseract_blocked": "Windows is blocking Tesseract (error 740: administrator rights required). Open tesseract.exe Properties > Compatibility and untick \"Run this program as an administrator\", or reinstall it outside Program Files (e.g. C:\\Tesseract-OCR).",
+            "no_languages": "No language pack is installed in Tesseract. Reinstall it with Arabic and French enabled.",
+            "open_failed": "The file could not be opened (corrupted or unsupported format).",
+            "no_pages": "The file has no pages.",
+            "no_text": "OCR ran but recognised no text. The scan quality may be too low, or the image is dark/upside-down; try a clearer image.",
+            "unexpected": "Unexpected error during OCR. Open \"OCR diagnostics\" below and send me its content.",
+        },
+        "warnings": {
+            "ara_missing": "⚠️ The Arabic language pack is not installed in Tesseract: Arabic text will not be read correctly (random Latin symbols may appear).",
+            "fra_missing": "⚠️ The French language pack is not installed in Tesseract: accented letters (é, è, à) may be read less accurately.",
+            "low_quality": "⚠️ The extracted text quality is low; check the preview below before analysing.",
+            "truncated": "ℹ️ Only the first {n} pages were processed by OCR.",
+            "scanned_unavailable": "⚠️ The file looks scanned but OCR is unavailable, so the analysis may be incomplete. Reason: {reason}",
+        },
+        "diag_title": "🔧 OCR diagnostics",
+        "diag_pkgs": "Python packages (pytesseract and Pillow)",
+        "diag_render": "Rendering PDF pages as images",
+        "diag_program": "Tesseract program",
+        "diag_lang": "Language pack",
+        "diag_ready": "✅ OCR is ready.",
+        "diag_not_ready": "❌ OCR is not ready: see the red lines above.",
+        "diag_no_arabic": "⚠️ OCR works but without Arabic. On Windows reinstall Tesseract with Arabic and French ticked; on Streamlit Cloud add tesseract-ocr-ara and tesseract-ocr-fra to packages.txt.",
+        "diag_refresh": "🔄 Re-run diagnostics",
+    },
+}
 
+
+def _ocr_ui():
+    return OCR_UI.get(lang, OCR_UI["English"])
+
+
+def _ocr_error_message(code):
+    errors = _ocr_ui()["errors"]
+    return errors.get(code, errors["unexpected"])
+
+
+def _ocr_notes(info):
+    """Translate OCR warning codes into user-facing messages."""
+    warnings = _ocr_ui()["warnings"]
+    notes = []
+    for code in info.get("warnings", []):
+        if code == "truncated":
+            notes.append(warnings["truncated"].format(n=ocr.MAX_PAGES))
+        elif code in warnings:
+            notes.append(warnings[code])
+    return notes
+
+
+def render_ocr_diagnostics(expanded=False):
+    """One-click report of what the OCR feature has and lacks."""
+
+    ui = _ocr_ui()
+    d = ocr.diagnose()
+    pk = d["packages"]
+    installed = set(d["languages_installed"])
+    ok, bad = "✅", "❌"
+
+    with st.expander(ui["diag_title"], expanded=expanded):
+        st.markdown("- {} {}".format(
+            ok if (pk["pytesseract"] and pk["pillow"]) else bad, ui["diag_pkgs"]))
+        st.markdown("- {} {}".format(
+            ok if pk["pdf_rendering"] else bad, ui["diag_render"]))
+
+        if d["tesseract_version"]:
+            st.markdown("- {} {} — `{}` (v{})".format(
+                ok, ui["diag_program"], d["tesseract_path"] or "PATH",
+                d["tesseract_version"]))
+        else:
+            code = d["tesseract_error_code"] or (
+                "tesseract_missing" if pk["pytesseract"] else "deps_missing")
+            st.markdown("- {} {} — {}".format(
+                bad, ui["diag_program"], _ocr_error_message(code)))
+
+        for language in ocr.WANTED_LANGUAGES:
+            st.markdown("- {} {}: `{}`".format(
+                ok if language in installed else bad, ui["diag_lang"], language))
+
+        if d["ready"] and d["ready_for_arabic"]:
+            st.success(ui["diag_ready"])
+        elif d["ready"]:
+            st.warning(ui["diag_no_arabic"])
+        else:
+            st.error(ui["diag_not_ready"])
+
+        if d["tesseract_error"]:
+            st.code(d["tesseract_error"])
+
+        st.caption("{} | Python {}".format(d["platform"], __import__("sys").version.split()[0]))
+
+        if st.button(ui["diag_refresh"], key="ocr_diag_refresh"):
+            ocr.diagnose(refresh=True)
+            st.rerun()
+
+
+# ==========================================
+# FILE TEXT EXTRACTION
+# ==========================================
+# Every extractor returns (text, error, used_ocr, notes):
+#   text     the extracted text, or None on failure
+#   error    a user-facing message (already translated), or None
+#   used_ocr True if any text came from OCR
+#   notes    list of user-facing warnings (already translated)
+
+def extract_pdf(f):
     try:
         f.seek(0)
 
+        page_texts = []
+        needs_ocr = []
+
         with pdfplumber.open(f) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
+            for index, page in enumerate(pdf.pages):
+                page_text = page.extract_text() or ""
+                page_texts.append(page_text)
 
-                if page_text:
-                    text += page_text + "\n"
+                # A page that is (almost) only a picture is a scan, even if
+                # a scanner app stamped a few characters of digital text on
+                # it ("Scanned by ...").
+                if len(page_text.strip()) < ocr.MIN_PAGE_CHARS and len(page.images) > 0:
+                    needs_ocr.append(index)
 
-        if text.strip():
-            return text, None, False
+        total_chars = sum(len(t.strip()) for t in page_texts)
 
-        # No text layer found -- likely a scanned/image-only PDF.
-        # Fall back to OCR (see ocr.py) before giving up entirely.
-        ocr_text, ocr_error = ocr.ocr_pdf(f)
+        if total_chars == 0 and not needs_ocr:
+            # No text and no listed images (e.g. text drawn as shapes):
+            # try OCR on every page.
+            needs_ocr = list(range(len(page_texts)))
 
-        if ocr_text:
-            return ocr_text, None, True
+        used_ocr = False
+        notes = []
 
-        return None, ocr_error or "Empty or scanned PDF (no readable text).", False
+        if needs_ocr:
+            pages_text, code, info = ocr.ocr_pdf_pages(f, needs_ocr)
+
+            if code is None and pages_text:
+                for index, recognised in pages_text.items():
+                    page_texts[index] = recognised
+                used_ocr = True
+                notes = _ocr_notes(info)
+            else:
+                st.session_state["ocr_diag_open"] = True
+                message = _ocr_error_message(code or "no_text")
+
+                if total_chars == 0:
+                    return None, message, False, []
+
+                # Some digital text exists. Only warn when the document
+                # is mostly scan (sparse), not for a normal PDF that just
+                # has one picture page.
+                if total_chars < ocr.MIN_PAGE_CHARS * max(1, len(page_texts)):
+                    notes = [_ocr_ui()["warnings"]["scanned_unavailable"].format(reason=message)]
+
+        text = "\n".join(t for t in page_texts if t.strip())
+
+        if not text.strip():
+            return None, _ocr_error_message("no_text"), False, []
+
+        return text, None, used_ocr, notes
 
     except Exception:
-        return None, "Invalid or corrupted PDF.", False
+        return None, "Invalid or corrupted PDF.", False, []
+
+
+def extract_image(f):
+    text, code, info = ocr.ocr_image_file(f)
+
+    if code:
+        st.session_state["ocr_diag_open"] = True
+        return None, _ocr_error_message(code), False, []
+
+    return text, None, True, _ocr_notes(info)
 
 
 def extract_docx(f):
@@ -2147,12 +2646,12 @@ def extract_docx(f):
         )
 
         if not text.strip():
-            return None, "Empty Word file.", False
+            return None, "Empty Word file.", False, []
 
-        return text, None, False
+        return text, None, False, []
 
     except Exception:
-        return None, "Invalid Word file.", False
+        return None, "Invalid Word file.", False, []
 
 
 # ==========================================
@@ -2181,7 +2680,13 @@ def analyse(text, report_lang=None):
 
     ctx = extractors.extract_all(text, report_lang)
 
-    findings, obs, recommendations = rules.build_findings(ctx, fx, ox)
+    findings, obs, recommendations = rules.build_findings(
+        ctx, findings_templates(report_lang, ctx["contract_type"]), ox
+    )
+
+    criminal_notes = build_criminal_notes(
+        ctx["original_text"], ctx["contract_type"], report_lang
+    )
 
     risk, lvl, cls, confidence = scoring.compute_score(ctx, findings)
 
@@ -2257,6 +2762,7 @@ def analyse(text, report_lang=None):
     try:
 
         st.session_state["risk_findings"] = findings
+        st.session_state["criminal_notes"] = criminal_notes
         st.session_state["detected_language"] = detected_language
         st.session_state["analysis_confidence"] = confidence
 
@@ -2467,7 +2973,7 @@ def compliance_score(risk, confidence, counts):
 # Export builders
 # ------------------------------------------------------------------
 
-def build_report_text(data, findings, filename="Contract"):
+def build_report_text(data, findings, filename="Contract", criminal_notes=None):
     """Plain-text report (same input -> same output)."""
 
     ru = TR.get(lang, TR["English"])["report_ui"]
@@ -2544,6 +3050,19 @@ def build_report_text(data, findings, filename="Contract"):
                 "-" * 55,
             ]
 
+    if criminal_notes:
+        cu = CRIMINAL_UI.get(lang, CRIMINAL_UI["English"])
+        lines += ["", "=" * 55, cu["title"], "=" * 55]
+        for note in criminal_notes:
+            lines += [
+                "",
+                "- " + note["title"],
+                note["note"],
+                cu["articles"] + ": " + note["articles"],
+                ru["recommendation_label"] + " " + note["recommendation"],
+                note["caveat"],
+            ]
+
     lines += [
         "",
         "!" * 55,
@@ -2612,7 +3131,7 @@ def build_report_json(data, findings, filename="Contract"):
 # Renderer
 # ------------------------------------------------------------------
 
-def display_full_report(result, filename="Contract", findings=None, analysis_id=None):
+def display_full_report(result, filename="Contract", findings=None, analysis_id=None, criminal_notes=None):
     """Full report for a registered user."""
 
     ru = TR.get(lang, TR["English"])["report_ui"]
@@ -2625,6 +3144,9 @@ def display_full_report(result, filename="Contract", findings=None, analysis_id=
 
     if findings is None:
         findings = st.session_state.get("risk_findings", [])
+
+    if criminal_notes is None:
+        criminal_notes = st.session_state.get("criminal_notes", [])
 
     clean = normalize_findings(findings)
     counts = severity_counts(clean)
@@ -2770,6 +3292,23 @@ def display_full_report(result, filename="Contract", findings=None, analysis_id=
                         st.markdown("**" + ru["suggested_wording_bold"] + "**")
                         st.success(finding["replacement"])
 
+        # ----- criminal-law alerts (separate from the risk findings) -----
+        if criminal_notes:
+            cu = CRIMINAL_UI.get(lang, CRIMINAL_UI["English"])
+
+            st.markdown("---")
+            st.markdown("#### " + cu["title"])
+            st.caption(cu["intro"])
+
+            for note in criminal_notes:
+                with st.expander("⚖️ " + note["title"], expanded=False):
+                    if note.get("trigger"):
+                        st.caption(cu["trigger"] + " : « " + note["trigger"] + " »")
+                    st.markdown(note["note"])
+                    st.markdown("**" + cu["articles"] + "** — " + note["articles"])
+                    st.info("**" + ru["recommendation_bold"] + "** — " + note["recommendation"])
+                    st.caption(note["caveat"])
+
     # ----- extracted data -----
     with tab_data:
 
@@ -2795,7 +3334,7 @@ def display_full_report(result, filename="Contract", findings=None, analysis_id=
     # ----- export -----
     with tab_export:
 
-        report_text = build_report_text(data, clean, filename)
+        report_text = build_report_text(data, clean, filename, criminal_notes)
         stamp = datetime.now().strftime("%Y%m%d_%H%M")
 
         safe_name = "".join(
@@ -3212,48 +3751,54 @@ elif page == t["analysis"]:
     # ---------------------------------
     # Upload
     # ---------------------------------
-    st.markdown("### 📄 Upload Contract")
+    st.markdown("### " + t["upload_title"])
 
     file = st.file_uploader(
-        "PDF / Word",
-        type=["pdf", "docx"],
+        t["upload_label"],
+        type=["pdf", "docx", "png", "jpg", "jpeg", "tif", "tiff", "webp"],
         key="contract_uploader"
     )
+    st.caption(t["upload_hint"])
 
     pasted_text = st.text_area(
-        "Or paste contract text",
+        t["paste_label"],
         height=180,
-        placeholder="Paste the contract text here...",
+        placeholder=t["paste_placeholder"],
         key="contract_text_input"
     )
 
     current_text = None
     current_filename = "Pasted Contract"
+    st.session_state["ocr_diag_open"] = False
 
     if file:
 
         current_filename = file.name
+        lower_name = file.name.lower()
 
-        if file.type == "application/pdf":
-            current_text, error, used_ocr = extract_pdf(file)
+        if lower_name.endswith(".pdf"):
+            current_text, error, used_ocr, notes = extract_pdf(file)
+        elif lower_name.endswith(".docx"):
+            current_text, error, used_ocr, notes = extract_docx(file)
         else:
-            current_text, error, used_ocr = extract_docx(file)
+            current_text, error, used_ocr, notes = extract_image(file)
 
         if error:
             st.error(error)
         else:
-            st.success("File loaded successfully.")
+            st.success(t["file_loaded"])
 
             if used_ocr:
                 ru = TR.get(lang, TR["English"])["report_ui"]
                 st.info(ru["ocr_used_note"])
 
+            for note in notes:
+                st.warning(note)
+
             st.session_state.analysis_text = current_text
             st.session_state.analysis_filename = file.name
 
-            with st.expander(
-                "Preview extracted text"
-            ):
+            with st.expander(t["preview_text"]):
                 st.text(current_text[:5000])
 
     elif pasted_text.strip():
@@ -3262,9 +3807,8 @@ elif page == t["analysis"]:
         st.session_state.analysis_text = pasted_text
         st.session_state.analysis_filename = "Pasted Contract"
 
-    st.info(
-        "If your PDF is scanned, text extraction may not work. "
-        "OCR will be added in a later development stage."
+    render_ocr_diagnostics(
+        expanded=bool(st.session_state.get("ocr_diag_open"))
     )
 
     # ---------------------------------
@@ -3291,10 +3835,7 @@ elif page == t["analysis"]:
         )
 
         if not text_to_analyze or not text_to_analyze.strip():
-            st.warning(
-                "Please upload a PDF/Word file "
-                "or paste contract text."
-            )
+            st.warning(t["need_input"])
         else:
 
             loading_slot = st.empty()
@@ -3323,7 +3864,8 @@ elif page == t["analysis"]:
                         st.session_state.user["User ID"],
                         filename,
                         result,
-                        findings_for_history
+                        findings_for_history,
+                        st.session_state.get("criminal_notes", [])
                     )
                 except Exception:
                     # History is a convenience feature; never let a
@@ -3392,7 +3934,8 @@ elif page == t["history"]:
                     tuple(payload["result"]),
                     row["filename"] or "Contract",
                     findings=payload["findings"],
-                    analysis_id=row["id"]
+                    analysis_id=row["id"],
+                    criminal_notes=payload.get("criminal", [])
                 )
             except Exception:
                 st.error(ru["shape_warning"])

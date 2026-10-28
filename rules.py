@@ -107,7 +107,20 @@ def build_findings(ctx, fx, ox):
             "الدفع",
             "السداد",
             "الثمن",
-            "الفاتورة"
+            "الفاتورة",
+            # Rent / fee vocabulary, so a lease or a fee-based contract has
+            # its payment article recognised (kept to phrases that are not
+            # substrings of everyday words: matching is by substring).
+            "loyer",
+            "redevance",
+            "honoraires",
+            "rémunération",
+            "monthly rent",
+            "annual rent",
+            "rental fee",
+            "بدل الإيجار",
+            "الأجرة",
+            "الأتعاب"
         ]
     ]
 
@@ -335,12 +348,40 @@ def build_findings(ctx, fx, ox):
 
         low = payment_clause.lower()
 
-        vague_payment = (
+        # "Terms to be agreed later" is a vague payment clause whatever
+        # else it mentions; a deadline given as a day of the month
+        # ("avant le 5 de chaque mois", "قبل اليوم الخامس (5) من كل شهر")
+        # is a real deadline even though it has no "N days" wording.
+        open_ended_terms = re.search(
+            r"\b(?:à convenir|a convenir|à définir|a definir|ultérieurement"
+            r"|to be agreed|to be determined|to be defined|at a later date"
+            r"|later agreed)\b"
+            r"|سيتم الاتفاق|يتفق عليها لاحق|يتفق عليه لاحق|يحدد لاحق|تحدد لاحق",
+            low,
+            re.I
+        )
+
+        day_of_month_deadline = re.search(
+            r"\d+\w*\)?\s*(?:day\s+)?(?:de chaque|of each|من كل)",
+            low,
+            re.I
+        )
+
+        vague_payment = bool(open_ended_terms) or (not day_of_month_deadline) and (
             (
                 "paiement" in low
                 or "règlement" in low
                 or "payment" in low
                 or "الدفع" in low
+                # rent / fee wordings ("payable chaque mois", "يدفع ...")
+                or "payable" in low
+                or "loyer" in low
+                or "monthly rent" in low
+                or "annual rent" in low
+                or "يدفع" in low
+                or "بدل الإيجار" in low
+                or "الأجرة" in low
+                or "الأتعاب" in low
             )
             and not re.search(
                 r"\b\d+\s*\)?\s*(?:jours?|days?|j\b|يوم|يومًا|يوما|أيام)",
