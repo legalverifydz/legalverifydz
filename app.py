@@ -12,6 +12,23 @@ import rules
 import scoring
 import ocr
 import criminal
+
+# True only if the ocr.py that is actually deployed is the current one.
+# After a partial upload the server can hold a stale ocr.py: calling its
+# missing functions would crash the page, so every OCR entry point checks
+# this flag and shows an explanatory message instead.
+# Constants read with a default, so a stale ocr.py can never make a normal
+# (digital) PDF fail just because the constant is missing.
+OCR_MIN_PAGE_CHARS = getattr(ocr, "MIN_PAGE_CHARS", 40)
+OCR_MAX_PAGES = getattr(ocr, "MAX_PAGES", 15)
+
+OCR_MODULE_OK = (
+    getattr(ocr, "OCR_VERSION", 0) >= 3
+    and all(
+        hasattr(ocr, name)
+        for name in ("diagnose", "ocr_pdf_pages", "ocr_image_file")
+    )
+)
 from datetime import datetime
 from pathlib import Path
 # openpyxl is used only for the admin "export accounts to Excel"
@@ -2411,6 +2428,7 @@ OCR_UI = {
             "no_pages": "لا يحتوي الملف على صفحات.",
             "no_text": "اشتغل المسح الضوئي لكنه لم يتعرّف على أي نص. قد تكون جودة المسح ضعيفة أو الصورة مظلمة/مقلوبة؛ جرّب صورة أوضح.",
             "unexpected": "حدث خطأ غير متوقع أثناء المسح الضوئي. افتح «فحص المسح الضوئي» أدناه وأرسل لي محتواه.",
+            "module_outdated": "ملف ocr.py الموجود على الخادم قديم (لا يحتوي النسخة الجديدة). استبدله في GitHub بالنسخة الجديدة ثم اضغط Reboot app.",
         },
         "warnings": {
             "ara_missing": "⚠️ حزمة اللغة العربية غير مثبّتة في Tesseract: لن يُقرأ النص العربي بشكل صحيح (قد تظهر رموز لاتينية عشوائية).",
@@ -2439,6 +2457,7 @@ OCR_UI = {
             "no_pages": "Le fichier ne contient aucune page.",
             "no_text": "L'OCR a fonctionné mais n'a reconnu aucun texte. La qualité du scan est peut-être trop faible, ou l'image est sombre/retournée ; essayez une image plus nette.",
             "unexpected": "Erreur inattendue pendant l'OCR. Ouvrez « Diagnostic de l'OCR » ci-dessous et envoyez-moi son contenu.",
+            "module_outdated": "Le fichier ocr.py présent sur le serveur est ancien (il ne contient pas la nouvelle version). Remplacez-le dans GitHub par la nouvelle version puis faites Reboot app.",
         },
         "warnings": {
             "ara_missing": "⚠️ Le pack de langue arabe n'est pas installé dans Tesseract : le texte arabe ne sera pas lu correctement (des caractères latins aléatoires peuvent apparaître).",
@@ -2467,6 +2486,7 @@ OCR_UI = {
             "no_pages": "The file has no pages.",
             "no_text": "OCR ran but recognised no text. The scan quality may be too low, or the image is dark/upside-down; try a clearer image.",
             "unexpected": "Unexpected error during OCR. Open \"OCR diagnostics\" below and send me its content.",
+            "module_outdated": "The ocr.py file on the server is outdated (it is not the new version). Replace it in GitHub with the new version, then press Reboot app.",
         },
         "warnings": {
             "ara_missing": "⚠️ The Arabic language pack is not installed in Tesseract: Arabic text will not be read correctly (random Latin symbols may appear).",
@@ -2503,7 +2523,7 @@ def _ocr_notes(info):
     notes = []
     for code in info.get("warnings", []):
         if code == "truncated":
-            notes.append(warnings["truncated"].format(n=ocr.MAX_PAGES))
+            notes.append(warnings["truncated"].format(n=OCR_MAX_PAGES))
         elif code in warnings:
             notes.append(warnings[code])
     return notes
@@ -2513,7 +2533,17 @@ def render_ocr_diagnostics(expanded=False):
     """One-click report of what the OCR feature has and lacks."""
 
     ui = _ocr_ui()
-    d = ocr.diagnose()
+
+    if not OCR_MODULE_OK:
+        st.error(_ocr_error_message("module_outdated"))
+        return
+
+    try:
+        d = ocr.diagnose()
+    except Exception as exc:  # noqa: BLE001 -- the panel must never crash the page
+        st.error("{}: {}".format(type(exc).__name__, exc))
+        return
+
     pk = d["packages"]
     installed = set(d["languages_installed"])
     ok, bad = "✅", "❌"
@@ -2579,7 +2609,7 @@ def extract_pdf(f):
                 # A page that is (almost) only a picture is a scan, even if
                 # a scanner app stamped a few characters of digital text on
                 # it ("Scanned by ...").
-                if len(page_text.strip()) < ocr.MIN_PAGE_CHARS and len(page.images) > 0:
+                if len(page_text.strip()) < OCR_MIN_PAGE_CHARS and len(page.images) > 0:
                     needs_ocr.append(index)
 
         total_chars = sum(len(t.strip()) for t in page_texts)
@@ -2591,6 +2621,14 @@ def extract_pdf(f):
 
         used_ocr = False
         notes = []
+
+        if needs_ocr and not OCR_MODULE_OK:
+            message = _ocr_error_message("module_outdated")
+            if total_chars == 0:
+                return None, message, False, []
+            needs_ocr = []
+            if total_chars < 40 * max(1, len(page_texts)):
+                notes = [_ocr_ui()["warnings"]["scanned_unavailable"].format(reason=message)]
 
         if needs_ocr:
             pages_text, code, info = ocr.ocr_pdf_pages(f, needs_ocr)
@@ -2610,7 +2648,7 @@ def extract_pdf(f):
                 # Some digital text exists. Only warn when the document
                 # is mostly scan (sparse), not for a normal PDF that just
                 # has one picture page.
-                if total_chars < ocr.MIN_PAGE_CHARS * max(1, len(page_texts)):
+                if total_chars < OCR_MIN_PAGE_CHARS * max(1, len(page_texts)):
                     notes = [_ocr_ui()["warnings"]["scanned_unavailable"].format(reason=message)]
 
         text = "\n".join(t for t in page_texts if t.strip())
@@ -2625,6 +2663,9 @@ def extract_pdf(f):
 
 
 def extract_image(f):
+    if not OCR_MODULE_OK:
+        return None, _ocr_error_message("module_outdated"), False, []
+
     text, code, info = ocr.ocr_image_file(f)
 
     if code:

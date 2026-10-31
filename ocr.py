@@ -48,6 +48,11 @@ import time
 # TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 TESSERACT_CMD = None
 
+# Bumped whenever the public API changes. app.py refuses to call into an
+# older ocr.py (a stale copy left on the server after a partial upload)
+# and says so, instead of crashing the whole page with an AttributeError.
+OCR_VERSION = 3
+
 WANTED_LANGUAGES = ("ara", "fra", "eng")  # contracts here are often bilingual
 DEFAULT_DPI = 200
 MAX_PAGES = 15              # OCR is slow; cap it
