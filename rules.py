@@ -73,6 +73,9 @@ def build_findings(ctx, fx, ox):
             "résiliation",
             "termination",
             "résilier",
+            "terminate",
+            "mettre fin",
+            "rescind",
             "termination of",
             "فسخ",
             "إنهاء العقد",
@@ -94,33 +97,22 @@ def build_findings(ctx, fx, ox):
         ]
     ]
 
-    payment_groups = [
+    # Payment wording is looked up in two passes: first the clause that
+    # describes HOW/WHEN payment happens (process words), then, failing
+    # that, a clause that at least states a price (price words).
+    payment_process_groups = [
         [
-            "paiement",
-            "prix",
-            "facturation",
-            "règlement",
-            "payment",
-            "price",
-            "invoice",
-            "invoicing",
-            "الدفع",
-            "السداد",
-            "الثمن",
-            "الفاتورة",
-            # Rent / fee vocabulary, so a lease or a fee-based contract has
-            # its payment article recognised (kept to phrases that are not
-            # substrings of everyday words: matching is by substring).
-            "loyer",
-            "redevance",
-            "honoraires",
-            "rémunération",
-            "monthly rent",
-            "annual rent",
-            "rental fee",
-            "بدل الإيجار",
-            "الأجرة",
-            "الأتعاب"
+            "paiement", "payer", "payé", "payable", "règlement",
+            "versement", "solde", "acompte", "avance de",
+            "payment", "pay ", "paid", "deposit",
+            "الدفع", "دفع", "السداد", "عربون", "الأجرة", "بدل الإيجار"
+        ]
+    ]
+
+    payment_price_groups = [
+        [
+            "prix", "facturation", "loyer", "price", "invoice",
+            "invoicing", "الثمن", "ثمن", "الفاتورة"
         ]
     ]
 
@@ -130,6 +122,7 @@ def build_findings(ctx, fx, ox):
             "responsable",
             "liability",
             "responsible",
+            "liable",
             "المسؤولية",
             "مسؤول",
             "المسؤول"
@@ -323,8 +316,9 @@ def build_findings(ctx, fx, ox):
     # 14. PAYMENT ANALYSIS
     # =========================================================
 
-    payment_clause = find_clause(
-        payment_groups
+    payment_clause = (
+        find_clause(payment_process_groups)
+        or find_clause(payment_price_groups)
     )
 
     if not payment_clause:
@@ -342,74 +336,65 @@ def build_findings(ctx, fx, ox):
             clause_status=_f["clause_status"]
         )
 
-    # If payment clause exists, do NOT create a risk automatically.
-    # We only inspect whether it is obviously incomplete.
+    # If a payment clause exists, we only flag it when it is clearly
+    # incomplete: it either defers the terms ("à convenir", "to be
+    # agreed", "يتفق عليها لاحقًا") or describes payment with no due
+    # date, delay or trigger at all.
     else:
 
         low = payment_clause.lower()
 
-        # "Terms to be agreed later" is a vague payment clause whatever
-        # else it mentions; a deadline given as a day of the month
-        # ("avant le 5 de chaque mois", "قبل اليوم الخامس (5) من كل شهر")
-        # is a real deadline even though it has no "N days" wording.
-        open_ended_terms = re.search(
-            r"\b(?:à convenir|a convenir|à définir|a definir|ultérieurement"
-            r"|to be agreed|to be determined|to be defined|at a later date"
-            r"|later agreed)\b"
-            r"|سيتم الاتفاق|يتفق عليها لاحق|يتفق عليه لاحق|يحدد لاحق|تحدد لاحق",
-            low,
-            re.I
+        explicit_vague = any(
+            x in low
+            for x in [
+                "à convenir", "a convenir", "à définir", "à déterminer",
+                "ultérieurement", "ultérieure",
+                "to be agreed", "to be determined", "to be defined",
+                "at a later date", "tbd",
+                "يتفق عليها", "يُتفق عليها", "يتم الاتفاق", "لاحقًا",
+                "لاحقا", "تحدد لاحقًا", "يحدد لاحقًا"
+            ]
         )
 
-        day_of_month_deadline = re.search(
-            r"\d+\w*\)?\s*(?:day\s+)?(?:de chaque|of each|من كل)",
-            low,
-            re.I
+        has_process_word = any(
+            x in low
+            for x in [
+                "paiement", "payer", "payé", "payable", "règlement",
+                "versement", "solde", "payment", "pay ", "paid",
+                "الدفع", "دفع", "السداد", "بدل الإيجار"
+            ]
         )
 
-        vague_payment = bool(open_ended_terms) or (not day_of_month_deadline) and (
-            (
-                "paiement" in low
-                or "règlement" in low
-                or "payment" in low
-                or "الدفع" in low
-                # rent / fee wordings ("payable chaque mois", "يدفع ...")
-                or "payable" in low
-                or "loyer" in low
-                or "monthly rent" in low
-                or "annual rent" in low
-                or "يدفع" in low
-                or "بدل الإيجار" in low
-                or "الأجرة" in low
-                or "الأتعاب" in low
-            )
-            and not re.search(
+        has_timing = (
+            bool(re.search(
                 r"\b\d+\s*\)?\s*(?:jours?|days?|j\b|يوم|يومًا|يوما|أيام)",
-                low,
-                re.I
-            )
-            and not re.search(
+                low, re.I
+            ))
+            or bool(re.search(
                 r"(?:quinze|trente|soixante|quatre-vingt-dix|fifteen|thirty"
                 r"|sixty|ninety|خمسة عشر|ثلاثين|ستين|تسعين)\s*(?:\(\d+\)\s*)?"
                 r"(?:jours?|days?|يوم|يومًا|يوما|أيام)",
-                low,
-                re.I
-            )
-            and not any(
+                low, re.I
+            ))
+            or any(
                 x in low
                 for x in [
-                    "à la réception",
-                    "après réception",
-                    "à échéance",
-                    "within",
-                    "upon receipt",
-                    "selon facture",
-                    "facture",
-                    "invoice",
-                    "وفق الفاتورة",
-                    "عند الاستلام"
+                    "à la réception", "après réception", "à échéance",
+                    "à la livraison", "à la signature", "avant le",
+                    "chaque mois", "par mois", "mensuel", "tous les mois",
+                    "within", "upon receipt", "upon delivery",
+                    "upon signing", "at signing", "on delivery",
+                    "monthly", "each month", "per month", "before the",
+                    "selon facture", "facture", "invoice",
+                    "وفق الفاتورة", "عند الاستلام", "عند التسليم",
+                    "عند توقيع", "عند التوقيع", "قبل اليوم", "كل شهر",
+                    "شهريا", "شهريًا", "خلال"
                 ]
             )
+        )
+
+        vague_payment = explicit_vague or (
+            has_process_word and not has_timing
         )
 
         if vague_payment:
@@ -482,7 +467,8 @@ def build_findings(ctx, fx, ox):
     # 17. PARTIES ANALYSIS
     # =========================================================
 
-    if not parties:
+    # A contract needs at least two identified parties.
+    if len(parties) < 2:
 
         _f = fx["PARTIES_MISSING"]
         add_finding(

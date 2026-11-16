@@ -1,7 +1,7 @@
-streamlit
+streamlit>=1.40
 pdfplumber
 python-docx
+openpyxl
 bcrypt
 pytesseract
 Pillow
-openpyxl

@@ -769,17 +769,6 @@ def extract_all(text, report_lang=None):
 
         return final
 
-    _ROLE_ONLY = re.compile(
-        r"^(?:le|la|les|l['’]|the|ci-après|hereinafter)?\s*"
-        r"(?:client|prestataire|vendeur|acheteur|bailleur|locataire"
-        r"|fournisseur|seller|buyer|lessor|lessee|provider|service provider"
-        r"|contractor|supplier|customer"
-        r"|الطرف الأول|الطرف الثاني|العميل|المشتري|البائع|المؤجر|المستأجر)"
-        r"(?:\s+(?:d['’]une part|d['’]autre part|of the one part"
-        r"|of the other part|من جهة|من جهة أخرى))?\s*$",
-        re.I
-    )
-
     def extract_parties_smart():
         window = _preamble_window()
         tokens = [(m.start(), m.group()) for m in re.finditer(r"\S+", window)]
@@ -800,12 +789,9 @@ def extract_all(text, report_lang=None):
         if len(names) >= 2:
             return names[:2]
 
-        # Fallback: legacy whole-contract scan, merged and pruned. A bare
-        # role ("le Client d'une part") names nobody, so it is dropped --
-        # which lets the "parties not identified" finding fire.
+        # Fallback: legacy whole-contract scan, merged and pruned
         legacy = extract_parties()
-        merged = _prune_parties(names + legacy)
-        return [n for n in merged if not _ROLE_ONLY.match(n)][:2]
+        return _prune_parties(names + legacy)[:2]
 
     parties = extract_parties_smart()
 
@@ -843,6 +829,57 @@ def extract_all(text, report_lang=None):
         return deduped
 
     parties = _split_and_dedupe_parties(parties)
+
+    # A bare role label ("le Client d'une part", "the Seller", "المؤجر")
+    # is NOT an identified party: the contract names nobody. Dropping
+    # these lets rules.py raise the "parties missing" finding.
+    _GENERIC_ROLES = {
+        "client", "prestataire", "prestataire de services", "fournisseur",
+        "bailleur", "locataire", "preneur", "vendeur", "acheteur",
+        "entrepreneur", "employeur", "salarié", "salarie", "société",
+        "societe", "entreprise", "partie", "première partie",
+        "premiere partie", "seconde partie", "deuxième partie",
+        "deuxieme partie", "cocontractant", "contractant",
+        "customer", "contractor", "seller", "buyer", "landlord", "tenant",
+        "supplier", "provider", "service provider", "lessor", "lessee",
+        "employer", "employee", "party", "first party", "second party",
+        "company", "the company", "vendor", "consultant",
+        "العميل", "الزبون", "المؤجر", "المستأجر", "البائع", "المشتري",
+        "المقاول", "المورد", "المتعاقد", "مقدم الخدمة", "صاحب العمل",
+        "العامل", "الطرف", "الشركة", "المؤسسة", "الطرف الأول",
+        "الطرف الثاني",
+    }
+
+    def _is_generic_role(name):
+        low = re.sub(r"\s+", " ", str(name).lower()).strip(" ,.;:-\u2013\u2014\"'()\u00ab\u00bb")
+        low = re.sub(
+            r"\b(?:d['\u2019]une part|d['\u2019]autre part"
+            r"|of the first part|of the second part)\b", "", low
+        ).strip(" ,.;:-")
+        low = re.sub(r"^(?:l['\u2019]|(?:le|la|les|un|une|the|a|an)\s+)", "", low).strip()
+        return low in _GENERIC_ROLES
+
+    parties = [p for p in parties if not _is_generic_role(p)]
+
+    # The same entity can come back twice with and without an article
+    # ("la société ALPHA SARL" / "société ALPHA SARL"): keep the longer.
+    def _norm_party(name):
+        low = re.sub(r"\s+", " ", str(name).lower()).strip()
+        return re.sub(r"^(?:l['\u2019]|(?:le|la|les|the)\s+)", "", low).strip()
+
+    _norms = [_norm_party(p) for p in parties]
+    _kept = []
+    for _i, _p in enumerate(parties):
+        _dup = any(
+            _j != _i and (
+                _norms[_i] == _norms[_j] and _j < _i
+                or (_norms[_i] != _norms[_j] and _norms[_i] in _norms[_j])
+            )
+            for _j in range(len(parties))
+        )
+        if not _dup:
+            _kept.append(_p)
+    parties = _kept
 
     # =========================================================
     # 6. AMOUNT EXTRACTION
@@ -955,10 +992,20 @@ def extract_all(text, report_lang=None):
 
             # Arabic
             r"(?:لمدة|مدة)\s*"
-            r"(سنة|عام|عام واحد|سنة واحدة|"
-            r"سنتين|ثلاث سنوات|\d+\s*(?:سنة|سنوات|شهر|أشهر|يوم|أيام))",
+            r"(سنة واحدة|عام واحد|سنة|عام|"
+            r"سنتين|ثلاث سنوات|\d+\s*(?:سنة|سنوات|شهرًا|شهرا|شهر|أشهر|يوم|أيام))",
 
-            r"\b(سنة|عام|سنتين|ثلاث سنوات)\b(?!\s*(?:\d|الصنع|الإنتاج|الميلاد))"
+            # Arabic with words in between and/or a number in brackets:
+            # "مدة العقد 12 شهرا", "مدة الإيجار ثلاث (3) سنوات"
+            r"(?:لمدة|مدة)[^.\n]{0,25}?"
+            r"((?:[\u0621-\u064A]+\s+(?=\())?\(?\d+\)?\s*"
+            r"(?:سنوات|سنة|أشهر|شهرًا|شهرا|شهر|أيام|يومًا|يوما|يوم))",
+
+            # Open-ended duration
+            r"\b(durée indéterminée|duree indeterminee|indefinite (?:term|period)"
+            r"|مدة غير محددة)",
+
+            r"\b(سنة|عام|سنتين|ثلاث سنوات)\b(?!\s*(?:الصنع|الإنتاج|الانتاج))"
         ]
 
         for pattern in patterns:
@@ -975,26 +1022,6 @@ def extract_all(text, report_lang=None):
 
                 if value:
                     durations.append(value)
-
-        # A number repeated in parentheses -- "twelve (12) months",
-        # "trois (3) ans", "ثلاث (3) سنوات" -- after a duration cue word.
-        unit = (
-            r"(months?|years?|days?|mois|ans?|ann[ée]es?|jours?"
-            r"|سنوات|سنة|أشهر|شهرا|شهر|أيام|يومًا|يوما|يوم)"
-        )
-        cue = (
-            r"(?:لمدة|مدة|duration|term|period|durée|pendant|pour|for)"
-            r"(?:\s+\S+){0,3}?"
-        )
-
-        for match in re.finditer(
-            cue + r"\s*\(\s*(\d+)\s*\)\s*" + unit,
-            analysis_text,
-            re.I
-        ):
-            durations.append(
-                "{} {}".format(match.group(1), match.group(2))
-            )
 
         return unique_keep_order(durations)
 

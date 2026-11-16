@@ -10,6 +10,9 @@ import extractors
 import rules
 import scoring
 import ocr
+import ui
+import ui_text
+import brand
 from datetime import datetime
 from pathlib import Path
 # openpyxl is used only for the admin "export accounts to Excel"
@@ -20,7 +23,11 @@ from openpyxl import Workbook
 # ==========================================
 # CONFIG
 # ==========================================
-st.set_page_config(page_title="LegalVerifyDZ", layout="wide")
+st.set_page_config(
+    page_title="LegalVerifyDZ",
+    page_icon=brand.favicon(),
+    layout="wide"
+)
 
 # Platform owner/operator accounts: these signup emails (lowercase)
 # get an extra "Accounts" page listing every registered user, with an
@@ -54,7 +61,24 @@ section[data-testid="stSidebar"] {
 }
 
 [data-testid="stSidebar"] * {
-    color: white;
+    color: #F1F5F9;
+}
+
+/* Hide Streamlit's own chrome (Fork / GitHub / menu / deploy). The
+   sidebar open/close button is NOT hidden. The red "Hosted with
+   Streamlit" badge on the free Streamlit Cloud plan cannot be removed
+   from code. */
+#MainMenu,
+footer,
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+[data-testid="stAppDeployButton"],
+.stDeployButton {
+    display: none !important;
+}
+header[data-testid="stHeader"] {
+    background: transparent;
 }
 
 .card {
@@ -301,15 +325,15 @@ section[data-testid="stSidebar"] {
     bottom: -40px;
     border-radius: 50%;
     background: radial-gradient(circle at 30% 30%,
-                rgba(255,255,255,0.55), rgba(255,255,255,0.08));
-    border: 1px solid rgba(255,255,255,0.25);
+                rgba(255,255,255,0.20), rgba(255,255,255,0.02));
+    border: 1px solid rgba(255,255,255,0.09);
     animation-name: bubbleRise;
     animation-timing-function: ease-in;
     animation-iteration-count: infinite;
 }
 @keyframes bubbleRise {
     0%   { transform: translate(0, 0); opacity: 0; }
-    12%  { opacity: 0.9; }
+    12%  { opacity: 0.45; }
     50%  { transform: translate(28px, -280px); }
     100% { transform: translate(-22px, -620px); opacity: 0; }
 }
@@ -321,57 +345,17 @@ section[data-testid="stSidebar"] {
 </style>
 """, unsafe_allow_html=True)
 
+st.markdown("<style>" + ui.EXTRA_CSS + "</style>", unsafe_allow_html=True)
+
 
 # ==========================================
 # BRAND LOGO
 # ==========================================
-# A shield (trust/protection) wrapped around a contract document with a
-# verification checkmark -- replaces the generic ⚖️ emoji with a mark
-# specific to what the platform actually does (verify contracts).
-_LOGO_SVG = """
-<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"
-     width="{size}" height="{size}">
-  <defs>
-    <linearGradient id="lvzShield" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#2563EB"/>
-      <stop offset="100%" stop-color="#4F8BFF"/>
-    </linearGradient>
-  </defs>
-  <path d="M50 4 L88 18 L88 46 Q88 78 50 96 Q12 78 12 46 L12 18 Z"
-        fill="url(#lvzShield)"/>
-  <rect x="31" y="28" width="38" height="46" rx="4" fill="#FFFFFF"/>
-  <rect x="37" y="37" width="26" height="4" rx="2" fill="#CBD5E1"/>
-  <rect x="37" y="46" width="26" height="4" rx="2" fill="#CBD5E1"/>
-  <rect x="37" y="55" width="16" height="4" rx="2" fill="#CBD5E1"/>
-  <circle cx="66" cy="68" r="17" fill="#16A34A" stroke="#FFFFFF" stroke-width="3"/>
-  <path d="M58 68 L64 74 L75 61" fill="none" stroke="#FFFFFF"
-        stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>
-"""
-
-
+# The official logo lives in brand.py (icon, horizontal, dark variants and
+# the favicon). logo_html() is kept as a thin wrapper for any older call.
 def logo_html(size=80):
-    """
-    Inline brand mark at the given pixel size, as a single-line base64
-    <img> tag.
-
-    Why not embed the raw multi-line <svg>...</svg> directly? Because a
-    nested, multi-line SVG block placed inside a larger HTML string
-    passed to st.markdown(..., unsafe_allow_html=True) can confuse
-    Streamlit's Markdown-to-HTML parser partway through -- it can stop
-    treating the rest of the string as HTML and print it as literal
-    text instead (exactly the "raw tags visible on screen" symptom).
-    A single-line base64 data-URI <img> tag has no nested tags for the
-    parser to get confused by, so it embeds reliably no matter what
-    HTML it's placed inside.
-    """
-    svg = _LOGO_SVG.format(size=size)
-    encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
-    return (
-        '<img src="data:image/svg+xml;base64,{b64}" '
-        'width="{size}" height="{size}" '
-        'style="display:block;margin:0 auto;" />'
-    ).format(b64=encoded, size=size)
+    """Shield mark on a light background (single-line <img> tag)."""
+    return brand.icon(size)
 
 
 def hero_bubbles_html():
@@ -449,10 +433,13 @@ for key, value in defaults.items():
 # ==========================================
 # LANGUAGE
 # ==========================================
-lang = st.sidebar.selectbox(
-    "Language / اللغة",
-    ["العربية", "English", "Français"]
-)
+# Reserve the top of the sidebar: language switch first, then the brand.
+_sb_lang = st.sidebar.container()
+_sb_brand = st.sidebar.container()
+
+if st.session_state.get("ui_lang") not in ("العربية", "English", "Français"):
+    st.session_state["ui_lang"] = "العربية"
+lang = st.session_state["ui_lang"]
 
 T = {
     "English": {
@@ -529,6 +516,11 @@ T = {
     },
 }
 
+for _lk, _extra in ui_text.NEW_T.items():
+    T[_lk].update(_extra)
+
+T["العربية"] = ui_text.strip_tashkeel(T["العربية"])
+
 t = T[lang]
 
 # ==========================================
@@ -592,6 +584,44 @@ if lang == "العربية":
         .block-container h3 {
             font-family: 'Cairo', 'Tajawal', sans-serif;
             font-weight: 700;
+        }
+
+        /* Custom components (lv-*) use the same Cairo font as the buttons.
+           The text inside st.markdown HTML otherwise falls back to a system
+           font; letter-spacing is forced to 0 so Arabic letters stay joined. */
+        [class^="lv-"], [class*=" lv-"],
+        [class^="lv-"] *, [class*=" lv-"] * {
+            font-family: 'Cairo', 'Tajawal', 'Segoe UI', sans-serif !important;
+            letter-spacing: 0 !important;
+        }
+        [data-baseweb="tab"] p,
+        [data-testid="stCaptionContainer"] p,
+        [data-testid="stMetricLabel"] p,
+        [data-testid="stMetricValue"] {
+            font-family: 'Cairo', 'Tajawal', 'Segoe UI', sans-serif !important;
+            letter-spacing: 0 !important;
+        }
+
+        /* Sidebar: same direction and font as the page */
+        [data-testid="stSidebar"] {
+            direction: rtl;
+            text-align: right;
+        }
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] button,
+        [data-testid="stSidebar"] input,
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3,
+        [data-testid="stSidebar"] small,
+        [data-testid="stSidebar"] [data-baseweb="select"] div {
+            font-family: 'Cairo', 'Tajawal', 'Segoe UI', sans-serif;
+        }
+        [data-testid="stSidebar"] [data-testid="stIconMaterial"],
+        [data-testid="stSidebar"] span[class*="material"] {
+            font-family: 'Material Symbols Rounded', 'Material Symbols Outlined',
+                         'Material Icons' !important;
         }
         </style>
         """,
@@ -1219,6 +1249,14 @@ TR = {
 }
 
 
+_EMOJI_LEAD = re.compile("^[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200d]+\\s*")
+for _lk in TR:
+    _ru = TR[_lk].get("report_ui", {})
+    for _k, _v in list(_ru.items()):
+        if isinstance(_v, str):
+            _ru[_k] = _EMOJI_LEAD.sub("", _v)
+
+
 def _tr(lang_key):
     """Safe lookup: unknown/None language falls back to English."""
     return TR.get(lang_key, TR["English"])
@@ -1361,6 +1399,10 @@ for _lang_key, _table in LEGAL_BASIS.items():
         _tpl["recommendation"] = _tpl["recommendation"] + " " + _rec_sfx
 
 
+
+
+# Arabic report text without diacritics, consistent with the interface.
+TR["العربية"] = ui_text.strip_tashkeel(TR["العربية"])
 
 
 # ==========================================
@@ -1932,24 +1974,23 @@ def show_auth_screen():
         """
     <div style='text-align:center; padding:35px 10px 10px;'>
         {logo}
-        <h1 class="brand-shimmer" style='margin-top:8px;'>LegalVerifyDZ</h1>
-        <h3>AI-Powered Contract Intelligence Platform</h3>
+        <h3 style='margin-top:18px;'>AI-Powered Contract Intelligence Platform</h3>
         <p style='color:#888;'>
         Create an account or continue as a guest.
         </p>
     </div>
-    """.format(logo=logo_html(72)),
+    """.format(logo=brand.horizontal(380)),
         unsafe_allow_html=True
     )
 
     tab_login, tab_signup, tab_guest = st.tabs([
-        "🔐 Login",
-        "📝 Create Account",
-        "👤 Guest"
+        ":material/login: Login",
+        ":material/person_add: Create Account",
+        ":material/person: Guest"
     ])
 
     with tab_login:
-        st.markdown("### 🔐 Login")
+        st.markdown("### Login")
 
         email = st.text_input(
             "Email",
@@ -1984,7 +2025,7 @@ def show_auth_screen():
                     )
 
     with tab_signup:
-        st.markdown("### 📝 Create Account")
+        st.markdown("### Create Account")
 
         name = st.text_input(
             "Full Name",
@@ -2013,7 +2054,7 @@ def show_auth_screen():
             key="auth_signup_password2"
         )
 
-        with st.expander("📜 الشروط وسياسة حماية المعطيات الشخصية (اقرأها قبل المتابعة)"):
+        with st.expander("الشروط وسياسة حماية المعطيات الشخصية (اقرأها قبل المتابعة)"):
             st.markdown(PRIVACY_TERMS_AR)
 
         consent_terms = st.checkbox(
@@ -2074,7 +2115,7 @@ def show_auth_screen():
                     st.error(message)
 
     with tab_guest:
-        st.markdown("### 👤 Continue as Guest")
+        st.markdown("### Continue as Guest")
 
         st.info("""
 You can test LegalVerifyDZ without creating an account.
@@ -2632,7 +2673,7 @@ def display_full_report(result, filename="Contract", findings=None, analysis_id=
 
     # ---------------- header ----------------
     st.markdown(
-        '<div class="{}">⚠️ {}: {} | {}: {}%</div>'.format(
+        '<div class="{}">{}: {} | {}: {}%</div>'.format(
             _html.escape(str(data["cls"])),
             _html.escape(str(t.get("risk", "Risk"))),
             _html.escape(str(data["lvl"])),
@@ -2642,7 +2683,7 @@ def display_full_report(result, filename="Contract", findings=None, analysis_id=
         unsafe_allow_html=True
     )
 
-    st.markdown("## 📌 " + str(filename))
+    st.markdown("## " + str(filename))
 
     # ---------------- KPI row ----------------
     k1, k2, k3, k4 = st.columns(4)
@@ -2893,7 +2934,7 @@ def display_guest_report(result):
     ru = TR.get(lang, TR["English"])["report_ui"]
 
     st.markdown(
-        f'<div class="{cls}">⚠️ {t["risk"]}: '
+        f'<div class="{cls}">{t["risk"]}: '
         f'{lvl} | {t["score"]}: {risk}%</div>',
         unsafe_allow_html=True
     )
@@ -2942,35 +2983,73 @@ def display_guest_report(result):
 # ==========================================
 # SIDEBAR
 # ==========================================
-with st.sidebar:
+def _go(page_id, **state):
+    """Button callback: switch page (and set any extra session state)."""
+    st.session_state["nav_page"] = page_id
+    for _k, _v in state.items():
+        st.session_state[_k] = _v
 
+
+def _set_lang(code):
+    st.session_state["ui_lang"] = code
+
+
+with _sb_lang:
     st.markdown(
-        """
-    <div style='text-align:center; padding:10px;'>
-        {logo}
-        <h2 class="brand-shimmer" style='margin-bottom:0; margin-top:8px;'>LegalVerifyDZ</h2>
-        <p style='color:gray; font-size:14px;'>
-        AI Legal Platform
-        </p>
-    </div>
-    """.format(logo=logo_html(56)),
+        '<div class="lv-side-lbl">'
+        + _html.escape(t["language_label"]) + '</div>',
         unsafe_allow_html=True
     )
+    with st.container(key="lang_switch"):
+        _lc = st.columns(3)
+        for _col, _code, _short in zip(
+            _lc, ["العربية", "Français", "English"], ["AR", "FR", "EN"]
+        ):
+            _col.button(
+                _short,
+                key="lang_btn_" + _short,
+                use_container_width=True,
+                type="primary" if lang == _code else "secondary",
+                help=_code,
+                on_click=_set_lang,
+                args=(_code,),
+            )
+
+with _sb_brand:
+    st.markdown(
+        '<div style="text-align:center; padding:16px 6px 0;">'
+        + brand.horizontal(212, dark=True) +
+        '<div class="lv-side-tag">'
+        + _html.escape(t["sidebar_tagline"]) +
+        '</div></div>',
+        unsafe_allow_html=True
+    )
+
+with st.sidebar:
 
     st.markdown("---")
 
     if st.session_state.authenticated:
 
         user = st.session_state.user
+        _plan_name = t["plan_names"].get(user["Plan"], user["Plan"])
 
-        st.success(
-            f"👤 {user['Name']}\n\n"
-            f"Plan: {user['Plan']}"
+        st.markdown(
+            '<div class="lv-side-card"><div class="lv-avatar">{ini}</div><div>'
+            '<div class="lv-side-main">{name}</div>'
+            '<div class="lv-side-sub">{pl}: {pn}</div></div></div>'.format(
+                ini=_html.escape(ui.initials(user["Name"])),
+                name=_html.escape(str(user["Name"])),
+                pl=_html.escape(t["plan_label"]),
+                pn=_html.escape(str(_plan_name)),
+            ),
+            unsafe_allow_html=True
         )
 
         if st.button(
             t["logout"],
             use_container_width=True,
+            icon=":material/logout:",
             key="logout_button"
         ):
             st.session_state.authenticated = False
@@ -2982,20 +3061,23 @@ with st.sidebar:
 
     else:
 
-        if st.session_state.guest_used:
-            st.warning(
-                "👤 Guest mode\n\n"
-                "Guest analysis already used."
-            )
-        else:
-            st.info(
-                "👤 Guest mode\n\n"
-                "1 limited analysis available."
-            )
+        st.markdown(
+            '<div class="lv-side-card"><div>'
+            '<div class="lv-side-main">{g}</div>'
+            '<div class="lv-side-sub">{m}</div></div></div>'.format(
+                g=_html.escape(t["guest_mode"]),
+                m=_html.escape(
+                    t["guest_none"] if st.session_state.guest_used else t["guest_left"]
+                ),
+            ),
+            unsafe_allow_html=True
+        )
 
         if st.button(
-            "🔐 Login / Create Account",
+            t["login_signup"],
             use_container_width=True,
+            type="primary",
+            icon=":material/login:",
             key="open_auth"
         ):
             st.session_state.auth_screen = True
@@ -3003,21 +3085,44 @@ with st.sidebar:
 
     st.markdown("---")
 
-    nav_options = [t["dashboard"], t["generate"], t["analysis"]]
+    nav_ids = ["dashboard", "generate", "analysis", "plans"]
 
     if st.session_state.authenticated:
-        nav_options.append(t["history"])
+        nav_ids.append("history")
 
         current_user = st.session_state.get("user") or {}
         current_email = str(current_user.get("Email", "")).strip().lower()
 
         if current_email in ADMIN_EMAILS:
-            nav_options.append(t["accounts"])
+            nav_ids.append("accounts")
 
-    page = st.radio(
-        "Navigation",
-        nav_options
-    )
+    _NAV_ICONS = {
+        "dashboard": "dashboard",
+        "generate": "edit_document",
+        "analysis": "document_scanner",
+        "plans": "workspace_premium",
+        "history": "history",
+        "accounts": "group",
+    }
+
+    if st.session_state.get("nav_page") not in nav_ids:
+        st.session_state["nav_page"] = "dashboard"
+
+    page_id = st.session_state["nav_page"]
+
+    with st.container(key="sidebar_nav"):
+        for _pid in nav_ids:
+            st.button(
+                t[_pid],
+                key="nav_" + _pid,
+                icon=":material/{}:".format(_NAV_ICONS[_pid]),
+                use_container_width=True,
+                type="primary" if _pid == page_id else "secondary",
+                on_click=_go,
+                args=(_pid,),
+            )
+
+    page = t[page_id]
 
     st.markdown("---")
     st.caption("LegalVerifyDZ © 2026")
@@ -3036,70 +3141,27 @@ if st.session_state.auth_screen:
 # ==========================================
 if page == t["dashboard"]:
 
-    # Hero: calm navy panel covering the whole top area, with drifting
-    # glow blobs + rising bubbles behind the brand and the tagline.
-    st.markdown(
-        '<div class="hero-wrap">'
-        '<div class="hero-bg">'
-        '<div class="hero-blob b1"></div>'
-        '<div class="hero-blob b2"></div>'
-        '<div class="hero-blob b3"></div>'
-        '<div class="hero-blob b4"></div>'
-        + hero_bubbles_html() +
-        '</div>'
-        '<div class="hero-content" style="text-align:center;">'
-        + logo_html(110) +
-        '<h1 class="brand-shimmer-light" style="font-size:54px; margin:14px 0 8px;">'
-        'LegalVerifyDZ</h1>'
-        '<p style="font-size:21px; color:#E2E8F0; max-width:820px; '
-        'margin:auto; font-weight:600; line-height:1.9;">'
-        + _html.escape(t["hero_tagline"]) +
-        '</p>'
-        '</div>'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
     if st.session_state.authenticated:
-        st.success(
-            t["welcome_back"].format(name=st.session_state.user['Name'])
+
+        # Registered user: a workspace, not a marketing page.
+        _uid = st.session_state.user["User ID"]
+        _rows = get_user_analyses(_uid, limit=1000)
+        _pending = sum(
+            1 for _r in _rows if has_pending_lawyer_request(_uid, _r["id"])
         )
-    elif st.session_state.guest_used:
-        st.warning(t["guest_used_msg"])
+        ui.render_workspace(t, st.session_state.user, _rows, _go, _pending)
+
     else:
-        st.info(t["guest_info_msg"])
 
-    st.markdown("## " + t["features_title"])
-
-    f1, f2 = st.columns(2)
-
-    with f1:
-        st.markdown(
-            """
-            <div class='card'>
-            <h3>{title}</h3>
-            <p>{desc}</p>
-            </div>
-            """.format(
-                title=_html.escape(t["feature1_title"]),
-                desc=_html.escape(t["feature1_desc"])
-            ),
-            unsafe_allow_html=True
+        # Visitor: compact landing (hero + tiles + tabs).
+        ui.render_landing(
+            t, _go, scan_animation_html(), hero_bubbles_html()
         )
 
-    with f2:
-        st.markdown(
-            """
-            <div class='card'>
-            <h3>{title}</h3>
-            <p>{desc}</p>
-            </div>
-            """.format(
-                title=_html.escape(t["feature2_title"]),
-                desc=_html.escape(t["feature2_desc"])
-            ),
-            unsafe_allow_html=True
-        )
+        if st.session_state.guest_used:
+            st.caption(t["guest_used_msg"])
+        else:
+            st.caption(t["guest_info_msg"])
 
     st.markdown(
         "<div style='text-align:center; color:gray; padding:20px;'>"
@@ -3146,7 +3208,7 @@ elif page == t["analysis"]:
         and st.session_state.guest_used
     ):
         st.error(
-            "🔒 Your one guest analysis has already been used."
+            "Your one guest analysis has already been used."
         )
 
         st.info(
@@ -3155,7 +3217,8 @@ elif page == t["analysis"]:
         )
 
         if st.button(
-            "🔐 Login / Create Account",
+            t["login_signup"],
+            icon=":material/login:",
             key="analysis_auth_button"
         ):
             st.session_state.auth_screen = True
@@ -3166,7 +3229,11 @@ elif page == t["analysis"]:
     # ---------------------------------
     # Demo
     # ---------------------------------
-    if st.button("🎯 Run Demo"):
+    if st.button(
+        t["run_demo"],
+        icon=":material/play_circle:",
+        key="run_demo_btn"
+    ) or st.session_state.pop("auto_demo", False):
 
         demo_text = """
         This service contract is made between Company Alpha
@@ -3184,7 +3251,7 @@ elif page == t["analysis"]:
 
         loading_slot = st.empty()
         loading_slot.markdown(
-            scan_animation_html("🤖 جارٍ تحليل العقد..." if lang == "العربية" else "🤖 AI is analyzing the contract..."),
+            scan_animation_html("جارٍ تحليل العقد..." if lang == "العربية" else "AI is analyzing the contract..."),
             unsafe_allow_html=True
         )
         import time
@@ -3212,7 +3279,7 @@ elif page == t["analysis"]:
     # ---------------------------------
     # Upload
     # ---------------------------------
-    st.markdown("### 📄 Upload Contract")
+    st.markdown("### " + t["upload_heading"])
 
     file = st.file_uploader(
         "PDF / Word",
@@ -3299,7 +3366,7 @@ elif page == t["analysis"]:
 
             loading_slot = st.empty()
             loading_slot.markdown(
-                scan_animation_html("🤖 جارٍ تحليل العقد..." if lang == "العربية" else "🤖 AI is analyzing the contract..."),
+                scan_animation_html("جارٍ تحليل العقد..." if lang == "العربية" else "AI is analyzing the contract..."),
                 unsafe_allow_html=True
             )
             import time
@@ -3430,6 +3497,17 @@ elif page == t["history"]:
                         st.rerun()
 
                     st.markdown('</div>', unsafe_allow_html=True)
+
+# ==========================================
+# PLANS
+# ==========================================
+elif page == t["plans"]:
+
+    ui.render_plans(
+        t,
+        (st.session_state.get("user") or {}).get("Plan", "Free"),
+        st.session_state.authenticated
+    )
 
 # ==========================================
 # ACCOUNTS  (platform owner/operator only)
