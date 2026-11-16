@@ -26,7 +26,8 @@ from openpyxl import Workbook
 st.set_page_config(
     page_title="LegalVerifyDZ",
     page_icon=brand.favicon(),
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # Platform owner/operator accounts: these signup emails (lowercase)
@@ -70,7 +71,8 @@ section[data-testid="stSidebar"] {
    from code. */
 #MainMenu,
 footer,
-[data-testid="stToolbar"],
+[data-testid="stToolbarActions"],
+[data-testid="stMainMenu"],
 [data-testid="stDecoration"],
 [data-testid="stStatusWidget"],
 [data-testid="stAppDeployButton"],
@@ -79,6 +81,30 @@ footer,
 }
 header[data-testid="stHeader"] {
     background: transparent;
+}
+
+/* NEVER hide the control that re-opens the sidebar. It lives in the top
+   bar (the toolbar container itself is left alone), and is styled so it
+   stays visible on both light pages and the dark hero banner. */
+[data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    z-index: 1000002 !important;
+}
+[data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapsedControl"] button,
+[data-testid="stExpandSidebarButton"] button {
+    background: #0B1F3A !important;
+    border: 1px solid rgba(255,255,255,0.25) !important;
+    border-radius: 10px !important;
+    color: #FFFFFF !important;
+}
+[data-testid="stExpandSidebarButton"] *,
+[data-testid="stSidebarCollapsedControl"] * {
+    color: #FFFFFF !important;
+    fill: #FFFFFF !important;
 }
 
 .card {
