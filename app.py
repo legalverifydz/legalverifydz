@@ -36,8 +36,41 @@ st.set_page_config(
 # used to track signups by eye. Add your own account's email here.
 # Anyone NOT in this set never sees this page or anyone else's data.
 ADMIN_EMAILS = {
-    "your-email@example.com",
+    "zarroug34@gmail.com",
 }
+
+
+def _load_admin_emails():
+    """
+    Admins = the set above + emails listed in a file named
+    admin_emails.txt (one per line, next to app.py) + the environment
+    variable LEGALVERIFY_ADMINS (comma-separated).
+
+    Keeping them in admin_emails.txt means replacing app.py with a newer
+    version never erases who the administrators are.
+    """
+    import os
+
+    emails = {e.strip().lower() for e in ADMIN_EMAILS if e.strip()}
+
+    for chunk in os.environ.get("LEGALVERIFY_ADMINS", "").replace(";", ",").split(","):
+        if chunk.strip():
+            emails.add(chunk.strip().lower())
+
+    for candidate in (Path("admin_emails.txt"), Path(__file__).resolve().parent / "admin_emails.txt"):
+        try:
+            if candidate.exists():
+                for line in candidate.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+                    line = line.strip().lower()
+                    if line and not line.startswith("#"):
+                        emails.add(line)
+        except OSError:
+            pass
+
+    return emails
+
+
+ADMIN_EMAILS = _load_admin_emails()
 
 # NOTE: the user database moved from an Excel file (users.xlsx) to
 # SQLite (see DB_FILE = legalverify.db below, near hash_password()).
@@ -105,6 +138,22 @@ header[data-testid="stHeader"] {
 [data-testid="stSidebarCollapsedControl"] * {
     color: #FFFFFF !important;
     fill: #FFFFFF !important;
+}
+
+/* On desktop the sidebar is the app's main navigation: it cannot be
+   collapsed (no collapse button) and is forced visible even if a
+   collapsed state was remembered by the browser. On narrow screens the
+   normal collapse/expand behaviour is kept. */
+@media (min-width: 992px) {
+    [data-testid="stSidebarCollapseButton"] {
+        display: none !important;
+    }
+    section[data-testid="stSidebar"] {
+        transform: none !important;
+        margin-left: 0 !important;
+        visibility: visible !important;
+        min-width: 16rem !important;
+    }
 }
 
 .card {
